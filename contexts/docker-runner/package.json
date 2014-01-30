@@ -1,0 +1,25 @@
+{
+  "name": "docker-runner",
+  "version": "0.0.9",
+  "private": true,
+  "description": "Codewars container management server",
+  "main": "server.js",
+  "directories": {
+    "test": "test"
+  },
+  "dependencies": {
+    "express": "3.x",
+    "docker.io": "0.9.8"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "docker",
+    "katas",
+    "codewars"
+  ],
+  "author": "Ryan Hewitt",
+  "license": "BSD-2-Clause"
+}
