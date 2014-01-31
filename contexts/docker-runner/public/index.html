@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Docker Control Test UI</title>
+    </head>
+    <script type="text/javascript" src="//ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
+    <script type="text/javascript">
+        $(document).ready(function() {
+            $('#language').change(function(){
+                $('#code-test').attr('action', '/'+$(this).val()+'/run');
+            });
+        });
+    </script>
+    <body>
+        <form id="code-test" action="/javascript/run" method="post">
+            <textarea id="code" rows="50" cols="60" name="code" autofocus placeholder="Code for submission"></textarea>
+            <select id="language" name="language">
+                <option value="javascript" selected>javascript</option>
+                <option value="python">python</option>
+                <option value="coffeescript">coffeescript</option>
+            </select>
+            <input type="submit" name="submit code" />
+        </form>
+    </body>
+</html>
