@@ -12,7 +12,6 @@ var net = require('net');
 var fs = require('fs');
 
 
-var staticPort = 1234;
 var webservicePort = 2222;
 
 var runners = {
@@ -59,8 +58,7 @@ app.get('/:runner/run', function(req, res) {
         var notYet = getError('Implementation Pending');
         notYet.stdout = 'Correctly handled input';
         res.send(notYet);
-    }
-    res.send(getError('Invalid request'));
+    } else res.send(getError('Invalid request'));
 });
 
 app.post('/:runner/run', function(req, res) {
@@ -76,7 +74,7 @@ app.post('/:runner/run', function(req, res) {
 
 // Currently broken, possibly race condition
 function getTestStream(language) {
-    return fs.createReadStream(DOCKERHOME+'/test/'+language+'/test.'+fileExts[language]);
+    return fs.createReadStream('test/'+language+'/test.'+fileExts[language]);
 }
 
 function createStreamForScript(language, script) {
