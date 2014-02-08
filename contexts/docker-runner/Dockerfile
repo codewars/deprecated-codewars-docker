@@ -12,5 +12,6 @@ ADD . /opt/docker-runner
 ADD bootstrap.sh /usr/local/bin/run
 
 # Runs in current shell context
+WORKDIR /opt/docker-runner
 CMD ["/usr/local/bin/run"]
 ENTRYPOINT ["/bin/bash"]
