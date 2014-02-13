@@ -1,6 +1,7 @@
 #!/bin/sh
 
 RUNNER=${RUNNER:-python}
+TIMEOUT=${TIMEOUT:-3}
 
 INPUTSCRIPT=`cat`
 V_PYTHON=/opt/ve/pyrunner/bin
