@@ -109,21 +109,22 @@ var ConfigureDocker = function(config){
             self.docker.containers.start(self.id, function(err, result) {
                if(err) throw err;
 
-/*
                self.docker.containers.wait(self.id, function(err, data) {
                    if(err) throw err;
                    self.statusCode = data.StatusCode;
-                    // TODO CURRENTLY TESTING WITHOUT WAIT, MAINTAINING CLEANUP
+                    // TODO CURRENTLY TESTING VALIDITY OF TIME METRIC
                        // do logs in finalCB, cleanup after res.send
-                   //self.finalCB.call(self);
-                   self.cleanup();
+                   self.finalCB.call(self);
+                   //self.cleanup();
                });
-*/
+/*
                setTimeout(function() {
                //self.cleanup.call(self); // REMOVE BELOW
+
                 _getContainerDuration.call(self, function() {self.finalCB.call(self);});
                 
                }, 2500); // alter this instead?
+*/
             });
         }
     }
@@ -132,10 +133,11 @@ var ConfigureDocker = function(config){
         var self = this;
         this.docker.containers.inspect(this.id, function(err, details) {
             if(err) throw err;
+/* TODO add back in if avoiding wait
             if(details.State.Running) {
                 setTimeout(function(){ self.cleanup.call(self); }, 1); // hopefully? change closure placement
                 return;
-            }
+            } */
 
             if(!details.State.StartedAt || !details.State.FinishedAt) 
                 throw "cannot get duration of a container without start/finish";
