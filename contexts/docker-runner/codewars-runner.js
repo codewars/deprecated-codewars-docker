@@ -93,8 +93,8 @@ var ConfigureDocker = function(config){
             if(err) throw err; // TODO handle error with response!!!
             // TODO error implementation
            if(!!res.Id) {
-              self.instrument('Container created');
               self.id = res.Id;
+              self.instrument('Container created');
 
               // deleted id as argument!!
               self.injectCode(codeStream, getPostInjectHandler.call(self));
@@ -176,11 +176,11 @@ var ConfigureDocker = function(config){
                     // Demuxing Stream
                     while(data !== null) {
                         var type = data.readUInt8(0);
-                        console.log('type is : '+type);
+                        //console.log('type is : '+type);
                         var size = data.readUInt32BE(4);
-                        console.log('size is : '+size);
+                        //console.log('size is : '+size);
                         var payload = data.slice(8, size+8);
-                        console.log('payload is: '+payload);
+                        //console.log('payload is: '+payload);
                         if(type == 2) self.stderr += payload;
                         else self.stdout += payload;
                         data = null; // no chunking so far
