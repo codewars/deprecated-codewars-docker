@@ -111,6 +111,7 @@ var ConfigureDocker = function(config){
                 self.instrument('client socket ended');
             });
 
+            self.instrument('about to start container');
             // Going to remove wait entirely, add loop to cleanup
             self.docker.containers.start(self.id, function(err, result) {
                if(err) throw err;
