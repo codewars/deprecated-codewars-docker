@@ -54,6 +54,12 @@ var ConfigureDocker = function(config){
                 testRunner.call(this);
             }
 
+            // Later this will do timing as well
+            var _instrument = function(optMessage) {
+                var id = this.id || 'NONE';
+                console.log('job '+id+': ', optMessage);
+            }
+
             var job = function(){
                 this.id = undefined;
                 this.stdout = '';
@@ -63,6 +69,7 @@ var ConfigureDocker = function(config){
                 this.run = _run;
                 this.test = _test;
                 this.finalCB = finalCB || defaultCB;
+                this.instrument = _instrument;
                 this.cleanup = _cleanup; // out of order now
             }
             job.prototype = this;
@@ -84,15 +91,14 @@ var ConfigureDocker = function(config){
         // create, attach, start, wait, cleanup + inspect -- removing wait, going straignt to cleanup FIXME
         this.docker.containers.create(this.runOpts, function(err, res) {
             if(err) throw err; // TODO handle error with response!!!
-            console.log('inside create callback');
             // TODO error implementation
            if(!!res.Id) {
-              console.log('Container created: ', res.Id);
+              self.instrument('Container created');
               self.id = res.Id;
 
               // deleted id as argument!!
               self.injectCode(codeStream, getPostInjectHandler.call(self));
-           } else console.log('NO ID RETURNED FROM CREATE'); // HANDLE
+           } else self.instrument('NO ID RETURNED FROM CREATE'); // HANDLE
         });
     }
 
@@ -102,18 +108,20 @@ var ConfigureDocker = function(config){
             if(err) throw err;
 
             client.on('end', function() {
-                console.log('client socket ended');
+                self.instrument('client socket ended');
             });
 
             // Going to remove wait entirely, add loop to cleanup
             self.docker.containers.start(self.id, function(err, result) {
                if(err) throw err;
+               self.instrument('Container started, about to wait!!!');
 
                self.docker.containers.wait(self.id, function(err, data) {
                    if(err) throw err;
+                   self.instrument('Container returned from wait with statusCode', data.statusCode);
                    self.statusCode = data.StatusCode;
-                    // TODO CURRENTLY TESTING VALIDITY OF TIME METRIC
                        // do logs in finalCB, cleanup after res.send
+                   self.instrument('Not cleaning up');
                    self.finalCB.call(self);
                    //self.cleanup();
                });
