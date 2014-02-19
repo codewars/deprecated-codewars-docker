@@ -34,11 +34,17 @@ var express = require('express'),
     }
 
     // response format.  Filter errors here.
-    function result(finished) {
+    // TODO timeout error
+    function result(finished, startTime) {
+        var responseTime = !!startTime ? Date.now()-startTime : null;
+        var timeout = (finished.statusCode == 124);
         return {
             statusCode: finished.statusCode,
+            timeout: timeout,
             stdout: finished.stdout,
-            stderr: finished.stderr
+            stderr: finished.stderr,
+            solutionTime: finished.duration, // TODO change order of operation
+            responseTime: responseTime
         }
     }
 
@@ -58,15 +64,17 @@ var express = require('express'),
         .use(express.bodyParser());
 
     app.get('/:runner/test', function(req, res) {
-        var resultCallback = function() { res.send(result(job)); }
+        var startTime = Date.now();
+        var resultCallback = function() { res.send(result(job, startTime)); }
         var job = runners[req.params.runner].createJob(resultCallback);
         job.test();
     });
 
     app.post('/:runner/run', function(req, res) {
+        var startTime = Date.now();
         var cStream = createStreamForScript(req.params.runner, req.body.code);
         if(!!cStream) {
-            var resultCallback = function() { res.send(result(job)); }
+            var resultCallback = function() { res.send(result(job, startTime)); }
             var job = runners[req.params.runner].createJob(resultCallback);
             job.run(cStream);
         } else res.send(getError('Problem streaming from POST'));
