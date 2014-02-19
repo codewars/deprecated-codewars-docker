@@ -4,6 +4,8 @@ var DockerIO = require('docker.io'),
 
 var ConfigureDocker = function(config){
 
+    config.version = config.version || 'v1.8';
+
     var docker = DockerIO(config.dockerOpts);
 
     function _makeRunner(runnerConfig) {
@@ -168,7 +170,7 @@ var ConfigureDocker = function(config){
         });
 
         client.on('connect', function() { 
-            client.write('POST /containers/' + self.id + '/attach?stdin=1&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' + 
+            client.write('POST '+config.version+'/containers/' + self.id + '/attach?stdin=1&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' + 
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
             client.on('data', function(data) { 
                 if(typeof input.nogo === 'undefined' || !input.nogo) {

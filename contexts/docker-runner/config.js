@@ -9,6 +9,7 @@ config.dockerOpts = {
     //host: 'http://docker-bridge',
     //hostname: 'docker-bridge',
     hostname: '172.17.42.1',
+    version: 'v1.8',
     port: 6969
 }
 config.dockerOpts.host = 'http://'+config.dockerOpts.hostname;
