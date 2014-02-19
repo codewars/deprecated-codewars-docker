@@ -170,9 +170,11 @@ var ConfigureDocker = function(config){
             client.write('POST /containers/' + self.id + '/attach?stdin=1&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' + 
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
             client.on('data', function(data) { 
-                if(typeof input.nogo === 'undefined' || !input.nogo) 
-                input.pipe(client);
-                else { 
+                if(typeof input.nogo === 'undefined' || !input.nogo) {
+                    self.instrument('injecting code');
+                    input.pipe(client);
+                } else { 
+                    self.instrument('reading stdout');
                     // Demuxing Stream
                     while(data !== null) {
                         var type = data.readUInt8(0);
@@ -183,6 +185,7 @@ var ConfigureDocker = function(config){
                         //console.log('payload is: '+payload);
                         if(type == 2) self.stderr += payload;
                         else self.stdout += payload;
+                        if(data !== null) self.instrument('DATA WAS NOT NULL, SETTING NULL'); // Follow through
                         data = null; // no chunking so far
                      }
                 } 
@@ -190,6 +193,7 @@ var ConfigureDocker = function(config){
 
             client.on('finish', function() {
                 input.nogo = true;
+                self.instrument('client socket finished');
                 cb(null, client); 
             });
         });
