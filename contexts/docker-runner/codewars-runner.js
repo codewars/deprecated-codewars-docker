@@ -200,6 +200,11 @@ var ConfigureDocker = function(config){
                 cb(null, client); 
             });
         });
+
+        setTimeout(function() { 
+            self.instrument('MANUALLY ENDING CLIENT');
+            client.end();
+        }, 5000);
     }
 
     return { createRunner: _makeRunner }
