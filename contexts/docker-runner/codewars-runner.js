@@ -125,8 +125,7 @@ var ConfigureDocker = function(config){
                    self.statusCode = data.StatusCode;
                        // do logs in finalCB, cleanup after res.send
                    self.instrument('Not cleaning up');
-                   self.finalCB.call(self);
-                   //self.cleanup();
+                   self.cleanup();
                });
 /*
                setTimeout(function() {
