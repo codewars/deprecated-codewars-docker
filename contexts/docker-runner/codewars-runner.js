@@ -43,12 +43,21 @@ var ConfigureDocker = function(config){
             var _run = function(codeStream) {
                 runCode.call(this, codeStream);
             }
+
+            var finalRM = function(job) {
+                job.instrument('SECOND REMOVAL');
+                job.docker.containers.remove(job.id, function(err) {
+                    if(err) job.instrument('SECOND FAILURE, NOT REMOVING: ', err.message);
+                });
+            };
+
             var _cleanup = function() {
                 var self = this;
                 // TODO move this out of here or create a clojure and call internal
+                // currently moving finalCB before cleanup.  Perhaps we can move cleanup anyway
                 var rm = function() { 
-                    self.docker.containers.remove(self.id, function(err){if(err) throw err;}); 
                     self.finalCB.call(self);
+                    self.docker.containers.remove(self.id, function(err){if(err) finalRM(self);}); // second try, clean this up 
                 }
                 _getContainerDuration.call(this, rm);
             }
@@ -56,9 +65,18 @@ var ConfigureDocker = function(config){
                 testRunner.call(this);
             }
 
-            // Later this will do timing as well
             var _instrument = function(optMessage) {
-                var id = this.id || 'NONE';
+                var id = !!this.id ? this.id.substring(0,13) : 'NONE';
+
+                if(!!this.initialTime && !!this.curTime) {
+                    var now = Date.now();
+                    console.log('job '+id+': total='+(now-this.initialTime)+' block='+(now-this.curTime), optMessage); 
+                    this.curTime = now; 
+                } else console.log('job '+id+': ', optMessage);
+            }
+
+            var _report = function(optMessage) {
+                var id = !!this.id ? this.id.substring(0,13) : 'NONE';
                 console.log('job '+id+': ', optMessage);
             }
 
@@ -69,9 +87,12 @@ var ConfigureDocker = function(config){
                 this.statusCode = undefined;
                 this.duration = null;
                 this.run = _run;
+                this.initialTime = Date.now();
+                this.curTime = this.initialTime;
                 this.test = _test;
                 this.finalCB = finalCB || defaultCB;
                 this.instrument = _instrument;
+                this.report = _report;
                 this.cleanup = _cleanup; // out of order now
             }
             job.prototype = this;
@@ -100,7 +121,7 @@ var ConfigureDocker = function(config){
 
               // deleted id as argument!!
               self.injectCode(codeStream, getPostInjectHandler.call(self));
-           } else self.instrument('NO ID RETURNED FROM CREATE'); // HANDLE
+           } else self.report('NO ID RETURNED FROM CREATE'); // HANDLE
         });
     }
 
@@ -110,10 +131,10 @@ var ConfigureDocker = function(config){
             if(err) throw err;
 
             client.on('end', function() {
-                self.instrument('client socket ended');
+                self.report('client socket ended');
             });
 
-            self.instrument('about to start container');
+            self.instrument('inject completed, about to start container');
             // Going to remove wait entirely, add loop to cleanup
             self.docker.containers.start(self.id, function(err, result) {
                if(err) throw err;
@@ -124,7 +145,7 @@ var ConfigureDocker = function(config){
                    self.instrument('Container returned from wait with statusCode', data.statusCode);
                    self.statusCode = data.StatusCode;
                        // do logs in finalCB, cleanup after res.send
-                   self.instrument('Not cleaning up');
+                   self.report('Not cleaning up');
                    self.cleanup();
                });
 /*
@@ -173,10 +194,10 @@ var ConfigureDocker = function(config){
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
             client.on('data', function(data) { 
                 if(typeof input.nogo === 'undefined' || !input.nogo) {
-                    self.instrument('injecting code');
+                    self.report('injecting code');
                     input.pipe(client);
                 } else { 
-                    self.instrument('reading stdout');
+                    self.report('reading stdout');
                     // Demuxing Stream
                     while(data !== null) { // no longer need while loop, see last instruction // TODO test large outputs
                         var type = data.readUInt8(0);
@@ -195,7 +216,7 @@ var ConfigureDocker = function(config){
 
             client.on('finish', function() {
                 input.nogo = true;
-                self.instrument('client socket finished');
+                self.report('client socket finished');
                 cb(null, client); 
             });
         });

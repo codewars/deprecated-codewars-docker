@@ -1,8 +1,9 @@
 startTime = Date.now();
 function someFunction(n) {
-  return "result from function: " + n;
+  return 2*n;
 }
 
 // expect
-someFunction(10);
-console.log((Date.now()-startTime));
+if(someFunction(10) === 20) 
+   console.log((Date.now()-startTime));
+else throw new Error('Kata failed');
