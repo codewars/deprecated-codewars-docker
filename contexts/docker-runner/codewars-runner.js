@@ -43,6 +43,7 @@ var ConfigureDocker = function(config){
             var self = this;
             this.pool.acquire(function(err, job){
                 if(err) throw err; // TODO
+                job.initialTime = Date.now();
                 self.pool.destroy(job); // we don't want to release 
                 job.finalCB = finalCB;
                 job.injectCode(codeStream, function(err, client){job.postInject(err, client);});
@@ -135,8 +136,8 @@ var ConfigureDocker = function(config){
                     console.log('DESTROYING '+job.id+' although container may not be removed!')
                 },
                 refreshIdle: false,
-                max: 12,
-                min: 8, 
+                max: 60,
+                min: 40, 
                 log: true // can also be a function
             });
         }

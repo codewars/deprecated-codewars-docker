@@ -66,7 +66,7 @@ var express = require('express'),
     app.get('/:runner/test', function(req, res) {
         var startTime = Date.now();
         runners[req.params.runner].test(function() {
-            res.send(result(job, startTime));
+            res.send(result(this, startTime));
         });
     });
 
@@ -80,7 +80,7 @@ var express = require('express'),
         }
 
         runners[req.params.runner].run(cStream, function() {
-            res.send(result(job, startTime));
+            res.send(result(this, startTime));
         });
     });
     app.listen(this.port);
