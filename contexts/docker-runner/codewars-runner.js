@@ -115,7 +115,7 @@ var ConfigureDocker = function(config){
         }
 
         var thisRunner = new cw();
-        if(thisRunner.runOpts.pool) {
+        if(!!thisRunner.runnerConfig.pool) {
             thisRunner.pool = poolModule.Pool({
                 name: 'docker-' + thisRunner.image + '-pool',
                 create: function(callback) {
