@@ -125,8 +125,12 @@ var ConfigureDocker = function(config){
                         if(!err) {
                             if(!!res.Id) {
                                 job.id = res.Id;
-                                job.instrument('Container created');
-                                callback(job);
+                                job.instrument('Container created, starting and hoping.');
+                                this.docker.containers.start(self.id, function(err, result) {
+                                   if(err) throw err;
+                                   self.instrument('Container started, resource ready for inject attempt.');
+                                   callback(job);
+                                });
                             } else callback(new Error('No ID returned from docker create'), null);
                         } else callback(err, null);
                     });
@@ -145,6 +149,27 @@ var ConfigureDocker = function(config){
     }
 
     function _postInjectHandler(err, client) {
+        // After we encounter this, we may want to release the job 
+        // back into the pool instead of destroying it.
+        if(err) throw err;
+
+        var self = this;
+        client.on('end', function() {
+            self.report('client socket ended');
+        });
+
+        this.instrument('inject completed, about to wait container');
+           self.docker.containers.wait(self.id, function(err, data) {
+               if(err) throw err;
+               self.instrument('Container returned from wait with statusCode', data.statusCode);
+               self.statusCode = data.StatusCode;
+                   // do logs in finalCB, cleanup after res.send
+               self.report('Not cleaning up');
+               self.cleanup();
+           });
+    }
+
+    function _postInjectHandlerOriginal(err, client) {
         // After we encounter this, we may want to release the job 
         // back into the pool instead of destroying it.
         if(err) throw err;
