@@ -115,7 +115,7 @@ var ConfigureDocker = function(config){
         }
 
         var thisRunner = new cw();
-        if(!!thisRunner.runnerConfig.pool) {
+        if(!!runnerConfig.pool) {
             thisRunner.pool = poolModule.Pool({
                 name: 'docker-' + thisRunner.image + '-pool',
                 create: function(callback) {
@@ -148,11 +148,11 @@ var ConfigureDocker = function(config){
         // back into the pool instead of destroying it.
         if(err) throw err;
 
+        var self = this;
         client.on('end', function() {
-            this.report('client socket ended');
+            self.report('client socket ended');
         });
 
-        var self = this;
         this.instrument('inject completed, about to start container');
         this.docker.containers.start(self.id, function(err, result) {
            if(err) throw err;
