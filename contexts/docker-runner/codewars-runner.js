@@ -44,7 +44,7 @@ var ConfigureDocker = function(config){
             this.pool.acquire(function(err, job){
                 if(err) throw err; // TODO
                 job.initialTime = Date.now();
-                self.pool.destroy(job); // we don't want to release 
+                //self.pool.destroy(job); // we don't want to release 
                 job.finalCB = finalCB;
                 job.injectCode(codeStream, function(err, client){job.postInject(err, client);});
             });
@@ -71,7 +71,12 @@ var ConfigureDocker = function(config){
             };
 
             var _cleanup = function() {
+
                 var self = this;
+                this.finalCB.call(this);
+                this.docker.containers.remove(this.id, function(err){if(err) finalRM(self);});
+
+/*
                 // TODO move this out of here or create a clojure and call internal
                 // currently moving finalCB before cleanup.  Perhaps we can move cleanup anyway
                 var rm = function() { 
@@ -79,6 +84,7 @@ var ConfigureDocker = function(config){
                     self.docker.containers.remove(self.id, function(err){if(err) finalRM(self);}); // second try, clean this up 
                 }
                 _getContainerDuration.call(this, rm);
+*/
             }
 
             var _instrument = function(optMessage) {
@@ -126,9 +132,9 @@ var ConfigureDocker = function(config){
                             if(!!res.Id) {
                                 job.id = res.Id;
                                 job.instrument('Container created, starting and hoping.');
-                                this.docker.containers.start(self.id, function(err, result) {
+                                thisRunner.docker.containers.start(job.id, function(err, result) {
                                    if(err) throw err;
-                                   self.instrument('Container started, resource ready for inject attempt.');
+                                   job.instrument('Container started, resource ready for inject attempt.');
                                    callback(job);
                                 });
                             } else callback(new Error('No ID returned from docker create'), null);
