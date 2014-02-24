@@ -115,29 +115,31 @@ var ConfigureDocker = function(config){
         }
 
         var thisRunner = new cw();
-        thisRunner.pool = poolModule.Pool({
-            name: 'docker-' + thisRunner.image + '-pool',
-            create: function(callback) {
-                var job = thisRunner.createJob();
-                thisRunner.docker.containers.create(thisRunner.runOpts, function(err, res) {
-                    if(!err) {
-                        if(!!res.Id) {
-                            job.id = res.Id;
-                            job.instrument('Container created');
-                            callback(job);
-                        } else callback(new Error('No ID returned from docker create'), null);
-                    } else callback(err, null);
-                });
+        if(thisRunner.runOpts.pool) {
+            thisRunner.pool = poolModule.Pool({
+                name: 'docker-' + thisRunner.image + '-pool',
+                create: function(callback) {
+                    var job = thisRunner.createJob();
+                    thisRunner.docker.containers.create(thisRunner.runOpts, function(err, res) {
+                        if(!err) {
+                            if(!!res.Id) {
+                                job.id = res.Id;
+                                job.instrument('Container created');
+                                callback(job);
+                            } else callback(new Error('No ID returned from docker create'), null);
+                        } else callback(err, null);
+                    });
 
-            },
-            destroy: function(id) {
-                console.log('DESTROYING '+id+' although container may not be removed!')
-            },
-            refreshIdle: false,
-            max: 12,
-            //min: 8, // Not setting this yet as I don't know when I would call 'drain'
-            log: true // can also be a function
-        });
+                },
+                destroy: function(job) {
+                    console.log('DESTROYING '+job.id+' although container may not be removed!')
+                },
+                refreshIdle: false,
+                max: 12,
+                min: 8, 
+                log: true // can also be a function
+            });
+        }
         return thisRunner;
     }
 

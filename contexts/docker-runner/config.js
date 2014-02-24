@@ -19,19 +19,22 @@ config.runners = [
         language: 'javascript',
         image: 'noderunner',
         cmd: ['/usr/local/bin/run'],
-        extension: 'js'
+        extension: 'js',
+        pool: true
     },
     {
         language: 'coffeescript',
         image: 'noderunner',
         cmd: ['/usr/local/bin/run'],
-        extension: 'coffee'
+        extension: 'coffee',
+        pool: false
     },
     {
         language: 'python',
         image: 'pyrunner',
         cmd: ['/usr/local/bin/run', '/opt/ve/pyrunner/bin/python', '/opt/apps/pyrunner/run.py'],
-        extension: 'py'
+        extension: 'py',
+        pool: false
     }];
 
 module.exports = config;
