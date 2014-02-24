@@ -148,11 +148,11 @@ var ConfigureDocker = function(config){
         // back into the pool instead of destroying it.
         if(err) throw err;
 
+        var self = this;
         client.on('end', function() {
-            this.report('client socket ended');
+            self.report('client socket ended');
         });
 
-        var self = this;
         this.instrument('inject completed, about to start container');
         this.docker.containers.start(self.id, function(err, result) {
            if(err) throw err;
