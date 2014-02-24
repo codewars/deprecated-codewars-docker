@@ -43,7 +43,7 @@ var express = require('express'),
             timeout: timeout,
             stdout: finished.stdout,
             stderr: finished.stderr,
-            solutionTime: finished.duration, // TODO change order of operation
+            solutionTime: finished.duration,
             responseTime: responseTime
         }
     }
@@ -65,19 +65,23 @@ var express = require('express'),
 
     app.get('/:runner/test', function(req, res) {
         var startTime = Date.now();
-        var resultCallback = function() { res.send(result(job, startTime)); }
-        var job = runners[req.params.runner].createJob(resultCallback);
-        job.test();
+        runners[req.params.runner].test(function() {
+            res.send(result(job, startTime));
+        });
     });
 
     app.post('/:runner/run', function(req, res) {
         var startTime = Date.now();
         var cStream = createStreamForScript(req.params.runner, req.body.code);
-        if(!!cStream) {
-            var resultCallback = function() { res.send(result(job, startTime)); }
-            var job = runners[req.params.runner].createJob(resultCallback);
-            job.run(cStream);
-        } else res.send(getError('Problem streaming from POST'));
+
+        if(!cStream) {
+            res.send(getError('Problem streaming from POST')); 
+            return;
+        }
+
+        runners[req.params.runner].run(cStream, function() {
+            res.send(result(job, startTime));
+        });
     });
     app.listen(this.port);
 })(config);

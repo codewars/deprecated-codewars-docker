@@ -1,6 +1,8 @@
 var DockerIO = require('docker.io'),
+    poolModule = require('generic-pool'),
     fs = require('fs'),
     net = require('net');
+
 
 var ConfigureDocker = function(config){
 
@@ -8,6 +10,8 @@ var ConfigureDocker = function(config){
 
     var docker = DockerIO(config.dockerOpts);
 
+
+    // TODO in the future possibly use a boolean for pool
     function _makeRunner(runnerConfig) {
 
         var options = {
@@ -20,14 +24,32 @@ var ConfigureDocker = function(config){
             Cmd: runnerConfig.cmd
         };
 
+        // Prototype chain is such that job shares all functionality
         var cw = function() {
             this.docker = docker;
             this.injectCode = _injectCode;
+            this.postInject = _postInjectHandler;
         };
         // sets language/cmd/etc
         cw.prototype = runnerConfig; 
         cw.prototype.runOpts = options;
 
+        cw.prototype.test = function(finalCB) {
+            var codeStream = fs.createReadStream('test/'+this.language+'/test.'+this.extension);
+            this.run(codeStream, finalCB);
+        };
+
+        cw.prototype.run = function(codeStream, finalCB) {
+            var self = this;
+            this.pool.acquire(function(err, job){
+                if(err) throw err; // TODO
+                self.pool.destroy(job); // we don't want to release 
+                job.finalCB = finalCB;
+                job.injectCode(codeStream, function(err, client){job.postInject(err, client);});
+            });
+        };
+
+        // do not call this directly anymore if using pool
         cw.prototype.createJob = function(finalCB) {
 
             var defaultCB = function() {
@@ -38,10 +60,6 @@ var ConfigureDocker = function(config){
                 }
                 console.log('Job '+this.id+' finished.  No callback provided');
                 console.log('Result:\n', result);
-            }
-            // not necessary
-            var _run = function(codeStream) {
-                runCode.call(this, codeStream);
             }
 
             var finalRM = function(job) {
@@ -61,14 +79,12 @@ var ConfigureDocker = function(config){
                 }
                 _getContainerDuration.call(this, rm);
             }
-            var _test = function() {
-                testRunner.call(this);
-            }
 
             var _instrument = function(optMessage) {
                 var id = !!this.id ? this.id.substring(0,13) : 'NONE';
 
-                if(!!this.initialTime && !!this.curTime) {
+                if(!!this.initialTime) {
+                    this.curTime = this.curTime || this.initialTime;
                     var now = Date.now();
                     console.log('job '+id+': total='+(now-this.initialTime)+' block='+(now-this.curTime), optMessage); 
                     this.curTime = now; 
@@ -86,10 +102,8 @@ var ConfigureDocker = function(config){
                 this.stderr = '';
                 this.statusCode = undefined;
                 this.duration = null;
-                this.run = _run;
-                this.initialTime = Date.now();
-                this.curTime = this.initialTime;
-                this.test = _test;
+                this.initialTime = undefined;
+                this.curTime = undefined;
                 this.finalCB = finalCB || defaultCB;
                 this.instrument = _instrument;
                 this.report = _report;
@@ -100,75 +114,63 @@ var ConfigureDocker = function(config){
             return new job();
         }
 
-        return new cw();
-    }
+        var thisRunner = new cw();
+        thisRunner.pool = poolModule.Pool({
+            name: 'docker-' + thisRunner.image + '-pool',
+            create: function(callback) {
+                var job = thisRunner.createJob();
+                thisRunner.docker.containers.create(thisRunner.runOpts, function(err, res) {
+                    if(!err) {
+                        if(!!res.Id) {
+                            job.id = res.Id;
+                            job.instrument('Container created');
+                            callback(job);
+                        } else callback(new Error('No ID returned from docker create'), null);
+                    } else callback(err, null);
+                });
 
-    function testRunner() {
-        var codeStream = fs.createReadStream('test/'+this.language+'/test.'+this.extension);
-        this.run(codeStream);
-    }
-
-    // this will be in the context of job
-    function runCode(codeStream) {
-        var self = this;
-        // create, attach, start, wait, cleanup + inspect -- removing wait, going straignt to cleanup FIXME
-        this.docker.containers.create(this.runOpts, function(err, res) {
-            if(err) throw err; // TODO handle error with response!!!
-            // TODO error implementation
-           if(!!res.Id) {
-              self.id = res.Id;
-              self.instrument('Container created');
-
-              // deleted id as argument!!
-              self.injectCode(codeStream, getPostInjectHandler.call(self));
-           } else self.report('NO ID RETURNED FROM CREATE'); // HANDLE
+            },
+            destroy: function(id) {
+                console.log('DESTROYING '+id+' although container may not be removed!')
+            },
+            refreshIdle: false,
+            max: 12,
+            //min: 8, // Not setting this yet as I don't know when I would call 'drain'
+            log: true // can also be a function
         });
+        return thisRunner;
     }
 
-    function getPostInjectHandler() {
+    function _postInjectHandler(err, client) {
+        // After we encounter this, we may want to release the job 
+        // back into the pool instead of destroying it.
+        if(err) throw err;
+
+        client.on('end', function() {
+            this.report('client socket ended');
+        });
+
         var self = this;
-        return function(err, client) {
-            if(err) throw err;
+        this.instrument('inject completed, about to start container');
+        this.docker.containers.start(self.id, function(err, result) {
+           if(err) throw err;
+           self.instrument('Container started, about to wait!!!');
 
-            client.on('end', function() {
-                self.report('client socket ended');
-            });
-
-            self.instrument('inject completed, about to start container');
-            // Going to remove wait entirely, add loop to cleanup
-            self.docker.containers.start(self.id, function(err, result) {
+           self.docker.containers.wait(self.id, function(err, data) {
                if(err) throw err;
-               self.instrument('Container started, about to wait!!!');
-
-               self.docker.containers.wait(self.id, function(err, data) {
-                   if(err) throw err;
-                   self.instrument('Container returned from wait with statusCode', data.statusCode);
-                   self.statusCode = data.StatusCode;
-                       // do logs in finalCB, cleanup after res.send
-                   self.report('Not cleaning up');
-                   self.cleanup();
-               });
-/*
-               setTimeout(function() {
-               //self.cleanup.call(self); // REMOVE BELOW
-
-                _getContainerDuration.call(self, function() {self.finalCB.call(self);});
-                
-               }, 2500); // alter this instead?
-*/
-            });
-        }
+               self.instrument('Container returned from wait with statusCode', data.statusCode);
+               self.statusCode = data.StatusCode;
+                   // do logs in finalCB, cleanup after res.send
+               self.report('Not cleaning up');
+               self.cleanup();
+           });
+        });
     }
 
     function _getContainerDuration(cb) {
         var self = this;
         this.docker.containers.inspect(this.id, function(err, details) {
             if(err) throw err;
-/* TODO add back in if avoiding wait
-            if(details.State.Running) {
-                setTimeout(function(){ self.cleanup.call(self); }, 1); // hopefully? change closure placement
-                return;
-            } */
 
             if(!details.State.StartedAt || !details.State.FinishedAt) 
                 throw "cannot get duration of a container without start/finish";
