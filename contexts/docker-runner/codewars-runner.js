@@ -11,7 +11,6 @@ var ConfigureDocker = function(config){
     var docker = DockerIO(config.dockerOpts);
 
 
-    // TODO in the future possibly use a boolean for pool
     function _makeRunner(runnerConfig) {
 
         var options = {
@@ -28,7 +27,7 @@ var ConfigureDocker = function(config){
         var cw = function() {
             this.docker = docker;
             this.injectCode = _injectCode;
-            this.postInject = _postInjectHandler;
+            this.postInject = _postInjectHandlerInspect;
         };
         // sets language/cmd/etc
         cw.prototype = runnerConfig; 
@@ -42,9 +41,9 @@ var ConfigureDocker = function(config){
         cw.prototype.run = function(codeStream, finalCB) {
             var self = this;
             this.pool.acquire(function(err, job){
-                if(err) throw err; // TODO
+                if(err) throw err; 
                 job.initialTime = Date.now();
-                //self.pool.destroy(job); // we don't want to release 
+                self.pool.destroy(job); // we don't want to release 
                 job.finalCB = finalCB;
                 job.injectCode(codeStream, function(err, client){job.postInject(err, client);});
             });
@@ -71,20 +70,9 @@ var ConfigureDocker = function(config){
             };
 
             var _cleanup = function() {
-
                 var self = this;
                 this.finalCB.call(this);
                 this.docker.containers.remove(this.id, function(err){if(err) finalRM(self);});
-
-/*
-                // TODO move this out of here or create a clojure and call internal
-                // currently moving finalCB before cleanup.  Perhaps we can move cleanup anyway
-                var rm = function() { 
-                    self.finalCB.call(self);
-                    self.docker.containers.remove(self.id, function(err){if(err) finalRM(self);}); // second try, clean this up 
-                }
-                _getContainerDuration.call(this, rm);
-*/
             }
 
             var _instrument = function(optMessage) {
@@ -154,9 +142,40 @@ var ConfigureDocker = function(config){
         return thisRunner;
     }
 
-    function _postInjectHandler(err, client) {
-        // After we encounter this, we may want to release the job 
-        // back into the pool instead of destroying it.
+    // After we encounter this, we may want to release the job 
+    // back into the pool instead of destroying it - depends on use case
+    function _postInjectHandlerInspect(err, client) {
+        if(err) throw err;
+        var self = this;
+        
+        client.on('end', function() {
+            self.report('client socket ended');
+        });
+
+        this.instrument('inject completed, calling inspect directly');
+        this.docker.containers.inspect(this.id, function(err, details) {
+            if(err) throw err;
+
+            if(!!details.State.Running) {
+                self.instrument('Inspect after finish returned running!');
+                setTimeout(function(){
+                    _postInjectHandlerInspect.call(self, null, client);
+                }, 500);
+            }
+
+            if(!details.State.StartedAt || !details.State.FinishedAt)  {
+                self.report("cannot get duration of a container without start/finish");
+            } else {
+                var ss = new Date(details.State.StartedAt).getTime();
+                var ff = new Date(details.State.FinishedAt).getTime();
+                self.duration = (ff-ss);
+            }
+            self.statusCode = details.StatusCode;
+            self.cleanup();
+        }); 
+    }
+
+    function _postInjectHandlerWait(err, client) {
         if(err) throw err;
 
         var self = this;
@@ -170,14 +189,11 @@ var ConfigureDocker = function(config){
                self.instrument('Container returned from wait with statusCode', data.statusCode);
                self.statusCode = data.StatusCode;
                    // do logs in finalCB, cleanup after res.send
-               self.report('Not cleaning up');
                self.cleanup();
            });
     }
 
-    function _postInjectHandlerOriginal(err, client) {
-        // After we encounter this, we may want to release the job 
-        // back into the pool instead of destroying it.
+    function _postInjectHandlerStart(err, client) {
         if(err) throw err;
 
         var self = this;
@@ -195,25 +211,11 @@ var ConfigureDocker = function(config){
                self.instrument('Container returned from wait with statusCode', data.statusCode);
                self.statusCode = data.StatusCode;
                    // do logs in finalCB, cleanup after res.send
-               self.report('Not cleaning up');
                self.cleanup();
            });
         });
     }
 
-    function _getContainerDuration(cb) {
-        var self = this;
-        this.docker.containers.inspect(this.id, function(err, details) {
-            if(err) throw err;
-
-            if(!details.State.StartedAt || !details.State.FinishedAt) 
-                throw "cannot get duration of a container without start/finish";
-            var ss = new Date(details.State.StartedAt).getTime();
-            var ff = new Date(details.State.FinishedAt).getTime();
-            self.duration = (ff-ss);
-            cb();
-        }); 
-    }
 
 
     function _injectCode (input, cb) {
