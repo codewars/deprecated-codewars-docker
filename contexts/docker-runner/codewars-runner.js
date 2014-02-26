@@ -27,7 +27,8 @@ var ConfigureDocker = function(config){
         var cw = function() {
             this.docker = docker;
             this.injectCode = _injectCode;
-            this.postInject = _postInjectHandlerInspect;
+            //this.postInject = _postInjectHandlerInspect;
+            this.postInject = function() { this.cleanup.call(this);};
         };
         // sets language/cmd/etc
         cw.prototype = runnerConfig; 
@@ -134,9 +135,9 @@ var ConfigureDocker = function(config){
                     console.log('DESTROYING '+job.id+' although container may not be removed!')
                 },
                 refreshIdle: false,
-                max: 60,
+                max: 50,
                 min: 40, 
-                log: true // can also be a function
+                log: false // can also be a function
             });
         }
         return thisRunner;
@@ -146,21 +147,22 @@ var ConfigureDocker = function(config){
     // back into the pool instead of destroying it - depends on use case
     function _postInjectHandlerInspect(err, client) {
         if(err) throw err;
-        var self = this;
-        
-        client.on('end', function() {
-            self.report('client socket ended');
-        });
 
+        var self = this;
         this.instrument('inject completed, calling inspect directly');
         this.docker.containers.inspect(this.id, function(err, details) {
             if(err) throw err;
+            self.instrument('inspect returned');
 
             if(!!details.State.Running) {
-                self.instrument('Inspect after finish returned running!');
+                self.report('Inspect after finish returned running!');
+                // is this wise under load?
+                self.postInject(null, client);
+                /*
                 setTimeout(function(){
                     _postInjectHandlerInspect.call(self, null, client);
-                }, 500);
+                }, 500); */
+                return;
             }
 
             if(!details.State.StartedAt || !details.State.FinishedAt)  {
@@ -179,10 +181,6 @@ var ConfigureDocker = function(config){
         if(err) throw err;
 
         var self = this;
-        client.on('end', function() {
-            self.report('client socket ended');
-        });
-
         this.instrument('inject completed, about to wait container');
            self.docker.containers.wait(self.id, function(err, data) {
                if(err) throw err;
@@ -197,10 +195,6 @@ var ConfigureDocker = function(config){
         if(err) throw err;
 
         var self = this;
-        client.on('end', function() {
-            self.report('client socket ended');
-        });
-
         this.instrument('inject completed, about to start container');
         this.docker.containers.start(self.id, function(err, result) {
            if(err) throw err;
@@ -237,7 +231,7 @@ var ConfigureDocker = function(config){
                 } else { 
                     self.report('reading stdout');
                     // Demuxing Stream
-                    while(data !== null) { // no longer need while loop, see last instruction // TODO test large outputs
+                    while(data !== null) { // no longer need while loop, see last instruction 
                         var type = data.readUInt8(0);
                         //console.log('type is : '+type);
                         var size = data.readUInt32BE(4);
@@ -252,10 +246,14 @@ var ConfigureDocker = function(config){
                 } 
             });
 
+            client.on('end', function() {
+                self.report('client socket ended');
+                cb(null, client); // moved cb here
+            });
+
             client.on('finish', function() {
                 input.nogo = true;
                 self.report('client socket finished');
-                cb(null, client); 
             });
         });
     }
