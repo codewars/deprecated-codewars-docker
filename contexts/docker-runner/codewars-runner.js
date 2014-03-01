@@ -44,6 +44,8 @@ var ConfigureDocker = function(config){
             var self = this;
             this.pool.acquire(function(err, job){
                 if(err) throw err; 
+                job.stdout = '';
+                job.stderr = '';
                 job.initialTime = Date.now();
                 job.finalCB = finalCB;
                 job.injectCode(codeStream, function(err, client){job.postInject(err, client);});
@@ -208,7 +210,7 @@ var ConfigureDocker = function(config){
         });
     }
 
-    function _postInjectHandlerReattach(err, OLDclient) {
+    function _postInjectHandlerReattach(err, someObject) {
         if(err) throw err;
         var self = this;
 
@@ -227,6 +229,11 @@ var ConfigureDocker = function(config){
             client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin=0&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' + 
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
             client.on('data', function(data) { 
+                if(typeof someObject.ok === 'undefined' || !someObject.ok) {
+                    someObject.ok = true;
+                    return; 
+                }
+
                 self.report('reading stdout on REATTACH: ' + data);
                 // Demuxing Stream
                 while(data !== null) { // no longer need while loop, see last instruction 
@@ -244,6 +251,7 @@ var ConfigureDocker = function(config){
                     //self.report('calling end manually');
                     //client.end();  
                     self.report('Calling cleanup DIRECTLY on read');
+                    someObject.ok = false; // FIXME (maybe ensure only one socket???)
                     self.cleanup();
 
                  }
@@ -268,7 +276,7 @@ var ConfigureDocker = function(config){
         var self = this;
 
         var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname);
-        _postInjectHandlerReattach.call(this, null, {}); // FIXME
+        _postInjectHandlerReattach.call(this, null, {});
 
         client.on('error', function(err) {
           cb(err);
