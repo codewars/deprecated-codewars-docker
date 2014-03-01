@@ -27,8 +27,9 @@ var ConfigureDocker = function(config){
         var cw = function() {
             this.docker = docker;
             this.injectCode = _injectCode;
-            //this.postInject = _postInjectHandlerInspect;
-            this.postInject = function() { this.cleanup.call(this);};
+            //this.postInject = _postInjectHandlerReattach;
+            this.postInject = function() { this.report('fake callback, SHOULD NOT BE CALLED'); };
+            //this.postInject = function() { this.cleanup.call(this);};
         };
         // sets language/cmd/etc
         cw.prototype = runnerConfig; 
@@ -44,7 +45,6 @@ var ConfigureDocker = function(config){
             this.pool.acquire(function(err, job){
                 if(err) throw err; 
                 job.initialTime = Date.now();
-                self.pool.destroy(job); // we don't want to release 
                 job.finalCB = finalCB;
                 job.injectCode(codeStream, function(err, client){job.postInject(err, client);});
             });
@@ -66,9 +66,12 @@ var ConfigureDocker = function(config){
             var _cleanup = function() {
                 var self = this;
                 this.finalCB.call(this);
+                this.pool.release(this); // TESTING, will need to test loop in BASH
+/*
                 this.docker.containers.remove(this.id, function(err){
                     if(err) self.instrument('Remove failed: ', err.message);
                 });
+*/
             };
 
             var _instrument = function(optMessage) {
@@ -130,9 +133,9 @@ var ConfigureDocker = function(config){
                     console.log('DESTROYING '+job.id+' although container may not be removed!')
                 },
                 refreshIdle: false,
-                max: 120, // look for maximum
-                min: 90, 
-                log: true // can also be a function
+                max: 5, // look for maximum
+                min: 3, 
+                log: false // can also be a function
             });
         }
         return thisRunner;
@@ -205,26 +208,83 @@ var ConfigureDocker = function(config){
         });
     }
 
+    function _postInjectHandlerReattach(err, OLDclient) {
+        if(err) throw err;
+        var self = this;
+
+        if(typeof client !== 'undefined') 
+            this.report('Client exists already... ' +  (typeof client));
+        else this.report('Client should be ok...');
+
+
+        var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname);
+
+        client.on('error', function(err) {
+          self.report('ERROR ON OUTPUT FIXME', err);
+        });
+
+        client.on('connect', function() { 
+            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin=0&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' + 
+                'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
+            client.on('data', function(data) { 
+                self.report('reading stdout on REATTACH: ' + data);
+                // Demuxing Stream
+                while(data !== null) { // no longer need while loop, see last instruction 
+                    var type = data.readUInt8(0);
+                    //console.log('type is : '+type);
+                    var size = data.readUInt32BE(4);
+                    //console.log('size is : '+size);
+                    var payload = data.slice(8, size+8);
+                    //console.log('payload is: '+payload);
+                    if(payload == null) break;
+                    if(type == 2) self.stderr += payload;
+                    else self.stdout += payload;
+                    data = null; // no chunking so far
+
+                    //self.report('calling end manually');
+                    //client.end();  
+                    self.report('Calling cleanup DIRECTLY on read');
+                    self.cleanup();
+
+                 }
+                   // client.end(); 
+            });
+
+            client.on('end', function() {
+                self.report('client socket ended for output');
+                //self.cleanup();
+            });
+
+            client.on('finish', function() {
+                self.report('client socket finished for output');
+            });
+        });
+    }
+
+
 
 
     function _injectCode (input, cb) {
         var self = this;
 
         var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname);
+        _postInjectHandlerReattach.call(this, null, {}); // FIXME
 
         client.on('error', function(err) {
           cb(err);
         });
 
         client.on('connect', function() { 
-            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin=1&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' + 
+            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin=1&stdout=0&stderr=0&stream=1 HTTP/1.1\r\n' + 
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
             client.on('data', function(data) { 
                 if(typeof input.nogo === 'undefined' || !input.nogo) {
                     self.report('injecting code');
                     input.pipe(client);
+
+                    //client.end(); //FIXME
                 } else { 
-                    self.report('reading stdout');
+                    self.report('reading stdout SHOULD NEVER GET HERE!!!');
                     // Demuxing Stream
                     while(data !== null) { // no longer need while loop, see last instruction 
                         var type = data.readUInt8(0);
@@ -237,13 +297,17 @@ var ConfigureDocker = function(config){
                         if(type == 2) self.stderr += payload;
                         else self.stdout += payload;
                         data = null; // no chunking so far
+
+                        // Not waiting for end in this case (container re-use)
+                        //cb(null, client); // IMPORTANT, TESTING ONLY
                      }
                 } 
+
             });
 
             client.on('end', function() {
-                self.report('client socket ended');
-                cb(null, client); // moved cb here
+                self.report('client socket ended, already should have closed');
+                //cb(null, client); // moved cb here
             });
 
             client.on('finish', function() {
