@@ -63,18 +63,13 @@ var ConfigureDocker = function(config){
                 console.log('Result:\n', result);
             }
 
-            var finalRM = function(job) {
-                job.instrument('SECOND REMOVAL');
-                job.docker.containers.remove(job.id, function(err) {
-                    if(err) job.instrument('SECOND FAILURE, NOT REMOVING: ', err.message);
-                });
-            };
-
             var _cleanup = function() {
                 var self = this;
                 this.finalCB.call(this);
-                this.docker.containers.remove(this.id, function(err){if(err) finalRM(self);});
-            }
+                this.docker.containers.remove(this.id, function(err){
+                    if(err) self.instrument('Remove failed: ', err.message);
+                });
+            };
 
             var _instrument = function(optMessage) {
                 var id = !!this.id ? this.id.substring(0,13) : 'NONE';
@@ -135,9 +130,9 @@ var ConfigureDocker = function(config){
                     console.log('DESTROYING '+job.id+' although container may not be removed!')
                 },
                 refreshIdle: false,
-                max: 50,
-                min: 40, 
-                log: false // can also be a function
+                max: 120, // look for maximum
+                min: 90, 
+                log: true // can also be a function
             });
         }
         return thisRunner;
