@@ -1,12 +1,19 @@
+/* We had a ready setup where did setupInject on create and then after every attach
+*  Now for debugging we are doing setupInject just before attach
+*/ 
 var DockerIO = require('docker.io'),
     poolModule = require('generic-pool'),
+    streams = require('stream'),
+    streamBuffers = require('stream-buffers'),
     fs = require('fs'),
     net = require('net');
 
 
 var ConfigureDocker = function(config){
 
-    config.version = config.version || 'v1.8';
+    // FIXME
+    config.version = config.version || 'v1.10';
+    //config.version = config.version || 'v1.8';
 
     var docker = DockerIO(config.dockerOpts);
 
@@ -16,10 +23,12 @@ var ConfigureDocker = function(config){
         var options = {
             Image: (config.repo+':'+runnerConfig.image),
             AttachStdin: true,
+            AttachStdout: true,
+            AttachStderr: true,
             OpenStdin: true,
-            Tty: false,
+            Tty: true,
             Env: ["RUNNER="+runnerConfig.language],
-            StdinOnce: true,
+            StdinOnce: false,
             Cmd: runnerConfig.cmd
         };
 
@@ -36,8 +45,14 @@ var ConfigureDocker = function(config){
         cw.prototype.runOpts = options;
 
         cw.prototype.test = function(finalCB) {
-            var codeStream = fs.createReadStream('test/'+this.language+'/test.'+this.extension);
-            this.run(codeStream, finalCB);
+            var runnerThis = this;
+            var testFilePath = 'test/'+this.language+'/test.'+this.extension;
+            var codeStream = fs.createReadStream(testFilePath);
+            fs.stat(testFilePath, function(err, stat) {
+                if(err) throw err;
+                codeStream.inputSize = stat.size; 
+                runnerThis.run(codeStream, finalCB);
+            });
         };
 
         cw.prototype.run = function(codeStream, finalCB) {
@@ -48,7 +63,8 @@ var ConfigureDocker = function(config){
                 job.stderr = '';
                 job.initialTime = Date.now();
                 job.finalCB = finalCB;
-                job.injectCode(codeStream, function(err, client){job.postInject(err, client);});
+                _setupInject.call(job, codeStream);
+                //_setupOutput.call(job, {});
             });
         };
 
@@ -65,15 +81,12 @@ var ConfigureDocker = function(config){
                 console.log('Result:\n', result);
             }
 
+            // TODO verify clean/dirty state conditions
             var _cleanup = function() {
                 var self = this;
+                self.report('who called me? -cleanup');
                 this.finalCB.call(this);
-                this.pool.release(this); // TESTING, will need to test loop in BASH
-/*
-                this.docker.containers.remove(this.id, function(err){
-                    if(err) self.instrument('Remove failed: ', err.message);
-                });
-*/
+                this.pool.release(this); 
             };
 
             var _instrument = function(optMessage) {
@@ -104,6 +117,7 @@ var ConfigureDocker = function(config){
                 this.instrument = _instrument;
                 this.report = _report;
                 this.cleanup = _cleanup; // out of order now
+                this.client = null; // FIXME just testing keeping a reference
             }
             job.prototype = this;
             
@@ -120,10 +134,10 @@ var ConfigureDocker = function(config){
                         if(!err) {
                             if(!!res.Id) {
                                 job.id = res.Id;
-                            _setupInject.call(job); // !!!!
                                 thisRunner.docker.containers.start(job.id, function(err, result) {
                                    if(err) throw err;
                                    //_setupInject.call(job);
+                                   //_setupOutput.call(job, {});
                                    callback(job);
                                 });
                             } else callback(new Error('No ID returned from docker create'), null);
@@ -135,8 +149,8 @@ var ConfigureDocker = function(config){
                     console.log('DESTROYING '+job.id+' although container may not be removed!')
                 },
                 refreshIdle: false,
-                max: 5, // look for maximum
-                min: 3, 
+                max: 20, // look for maximum
+                min: 1, 
                 log: false // can also be a function
             });
         }
@@ -158,10 +172,6 @@ var ConfigureDocker = function(config){
                 self.report('Inspect after finish returned running!');
                 // is this wise under load?
                 self.postInject(null, client);
-                /*
-                setTimeout(function(){
-                    _postInjectHandlerInspect.call(self, null, client);
-                }, 500); */
                 return;
             }
 
@@ -210,40 +220,78 @@ var ConfigureDocker = function(config){
         });
     }
 
-    function _setupInject() {
+    // temporary codestream argument to make more sane
+    function _setupInject(codeStream) {
         var self = this;
 
         var iClient = net.connect(config.dockerOpts.port, config.dockerOpts.hostname);
-
-
-        // TODO do the other closure here too!
-        //_postInjectHandlerReattach.call(this, null, {});
+        self.client = iClient;
 
         iClient.on('connect', function() { 
-            iClient.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin=1&stdout=0&stderr=0&stream=1 HTTP/1.1\r\n' + 
+            //self.report('calling post here.');
+            iClient.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin=1&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' +
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
-            iClient.on('data', function(data) { 
 
-                var _injectCode = function(input) {
-                    input.pipe(iClient);
-
-                    var _endInject = function() {
-                        self.report('client input socket finished');
-                        input.unpipe(iClient);
-                        iClient.removeAllListeners('finish');
-                    };
-                    iClient.on('finish', _endInject);
-                }
-                self.injectCode = _injectCode;
-
+            iClient.on('error', function(err) {
+               self.report('error on socket: ', err);
+               // cb(err);
             });
 
+            iClient.on('data', function(data) { 
+                if(typeof codeStream.spent === 'undefined' || !codeStream.spent) {
+                    self.report('received before input: ' + data);
+                    self.report('injecting code');
+                    codeStream.pipe(iClient);
+/* TESTING ONLY
+                    iClient.write("console.log('TEST');␄");
+                    codeStream.spent = true;
+                    iClient.end(); 
+*/
+                } else {
+                    self.report('data received on output\n' + data);
+                    while(data !== null) { // no longer need while loop, see last instruction 
+                        var payload;
+                        if(self.runOpts.Tty) {
+                            payload = data.slice(); // ???
+                            self.report('payload type: ' + (typeof payload));
+                            self.stdout += payload;
+                        } else {
+                            var type = data.readUInt8(0);
+                            //self.report('type is : '+type);
+                            var size = data.readUInt32BE(4);
+                            //self.report('size is : '+size);
+                            payload = data.slice(8, size+8);
+                            //self.report('payload is: '+payload);
+                            if(payload == null) break;
+                            if(type == 2) self.stderr += payload;
+                            else if(type == 1) self.stdout += payload;
+                            else self.stdout = data; // Likely non-tty?  Check config instead
+                        }
+                        data = null; // no chunking so far
+                    }
+                }
+            });
+
+            // code has been injected
+            iClient.on('finish', function() {
+                self.report('client socket finished');
+                codeStream.unpipe(iClient);
+                codeStream.spent = true;
+            });
+
+            // Verify this is ended, look into any necessary cleanup
             iClient.on('end', function() {
-                self.report('client input socket ended');
-                self.injectCode = function(obj){this.report('This function should NOT exist');};
+                self.report('client socket ended');
+                self.cleanup(); // is this the best place?
             });
 
         });
+    }
+
+
+/*
+    function _setupOutput(someObject) {
+        var self = this;
 
         var oClient = net.connect(config.dockerOpts.port, config.dockerOpts.hostname);
 
@@ -255,35 +303,42 @@ var ConfigureDocker = function(config){
             oClient.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin=0&stdout=1&stderr=1&stream=1 HTTP/1.1\r\n' + 
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
             oClient.on('data', function(data) {
-/*
+
+
                 if(typeof someObject.ok === 'undefined' || !someObject.ok) {
                     someObject.ok = true;
                     return; 
-                } */
+                }
 
-                self.report('reading stdout on REATTACH: ' + data);
+                self.report('Data received on OUTPUT\n' + data);
                 // Demuxing Stream
                 while(data !== null) { // no longer need while loop, see last instruction 
-                    var type = data.readUInt8(0);
-                    //console.log('type is : '+type);
-                    var size = data.readUInt32BE(4);
-                    //console.log('size is : '+size);
-                    var payload = data.slice(8, size+8);
-                    //console.log('payload is: '+payload);
-                    if(payload == null) break;
-                    if(type == 2) self.stderr += payload;
-                    else self.stdout += payload;
+                    var payload;
+                    if(self.runOpts.Tty) {
+                        payload = data.slice(); // ???
+                        self.report('payload type: ' + (typeof payload));
+                        self.stdout += payload;
+                    } else {
+                        var type = data.readUInt8(0);
+                        self.report('type is : '+type);
+                        var size = data.readUInt32BE(4);
+                        self.report('size is : '+size);
+                        payload = data.slice(8, size+8);
+
+                        self.report('payload is: '+payload);
+                        if(payload == null) break;
+                        if(type == 2) self.stderr += payload;
+                        else if(type == 1) self.stdout += payload;
+                        else self.stdout = data; // Likely non-tty?  Check config instead
+                    }
                     data = null; // no chunking so far
 
                     //self.report('calling end manually');
-                    //client.end();  
 // VERY IMPORTANT, IF CLEANUP IS CALLED ON INITIAL DATA WE RELEASE TO THE POOL!!!
                     self.report('Calling cleanup DIRECTLY on read');
-                    //someObject.ok = false; // FIXME (maybe ensure only one socket???)
+                    //someObject.ok = false; // FIXME This won't actually work, socket closes on server
                     self.cleanup();
-
                  }
-                   // client.end(); 
             });
 
             oClient.on('end', function() {
@@ -295,8 +350,7 @@ var ConfigureDocker = function(config){
                 self.report('client socket finished for output');
             });
         });
-
-    }
+    } */
 
     return { createRunner: _makeRunner }
 };
