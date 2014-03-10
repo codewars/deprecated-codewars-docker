@@ -20,19 +20,18 @@ errout () {
 
 doRunner () {
     if [ "$RUNNER" = "javascript" ]; then
-        timeout $TIMEOUT node -e "${SCRIPT}"
+        timeout $TIMEOUT node -e "$1"
     elif [ "$RUNNER" = "coffeescript" ]; then
-        timeout $TIMEOUT coffee -e "${SCRIPT}"
+        timeout $TIMEOUT coffee -e "$1"
     else
         errout 'Runner not specified... aborting'
     fi
-    echo "maybe"
 }
 
 while read INPUT; do
     if [ "$INPUT" = "$EOT_CH" ]
     then
-        doRunner "$SCRIPT"
+        doRunner "${SCRIPT}"
         SCRIPT=''
     else
         SCRIPT="${SCRIPT}${INPUT}"
