@@ -9,13 +9,15 @@ var DockerIO = require('docker.io'),
     fs = require('fs'),
     net = require('net');
 
-// MOVE INTO JOB PROTO
+var MAX_RETRY = 2;
+var MAX_USE = 50;
+
 var states = [];
-var INPUT_NEW = 0,
+var NEW = 0,
     RETRY = 1,
     WAITING = 2,
     FINISHED = 3;
-var stateNames = ['INPUT_NEW', 'RETRY', 'WAITING', 'FINISHED'];
+var stateNames = ['NEW', 'RETRY', 'WAITING', 'FINISHED'];
 
 
 var ConfigureDocker = function(config){
@@ -72,7 +74,7 @@ var ConfigureDocker = function(config){
                 job.stderr = '';
                 job.initialTime = Date.now();
                 job.finalCB = cfinalCB;
-                job.state = INPUT_NEW;
+                job.state = NEW;
                 job.retryCount = 0;
                 job.report('job acquired');
                 job.injectCode(codeStream);
@@ -92,11 +94,16 @@ var ConfigureDocker = function(config){
                 console.log('Result:\n', result);
             }
 
-            // TODO verify clean/dirty state conditions
             var _cleanup = function() {
                 this.finalCB.call(this);
-                this.report('releasing container...');
-                this.pool.release(this); 
+                this.useLevel++;
+                if(this.useLevel < MAX_USE) {
+                    this.report('releasing container...');
+                    this.pool.release(this); 
+                } else {
+                    this.report('forgetting container at use='+this.useLevel);
+                    this.pool.destroy(this);
+                }
             };
 
             var _instrument = function(optMessage) {
@@ -112,6 +119,11 @@ var ConfigureDocker = function(config){
                 this.report(reportString);
             }
 
+            // any changing criteria for last ditch log recovery attempt
+            var _isRecovery = function() {
+                return this.retryCount >= MAX_RETRY;
+            }
+
             var _report = function(optMessage) {
                 var state = this.state >= WAITING && this.retryCount > 0 ? 
                     util.format('%s (RETRY #%d)', stateNames[this.state], this.retryCount) : stateNames[this.state];
@@ -123,12 +135,14 @@ var ConfigureDocker = function(config){
                 this.id = undefined;
                 this.stdout = '';
                 this.stderr = '';
-                this.state = INPUT_NEW;
+                this.state = NEW;
+                this.useLevel = 0;
                 this.retryCount = 0;
                 this.statusCode = undefined;
                 this.duration = null;
                 this.initialTime = undefined;
                 this.curTime = undefined;
+                this.isRecovery = _isRecovery;
                 this.injectCode = _injectCode;
                 this.finalCB = defaultCB;
                 this.instrument = _instrument;
@@ -162,11 +176,11 @@ var ConfigureDocker = function(config){
                 destroy: function(job) {
                     console.log('DESTROYING '+job.id+' although container may not be removed!')
                 },
-                idleTimeoutMillis: 9000000,
+                //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
                 max: 60,
-                min: 30, 
-                log: false // can also be a function
+                min: 40, 
+                log: true // can also be a function
             });
         }
         return thisRunner;
@@ -263,6 +277,24 @@ var ConfigureDocker = function(config){
         }
     }
 
+    function retryRecoverFail(job, codeStream) {
+        job.client.destroy();
+        delete job.client;
+
+        if(job.retryCount <= MAX_RETRY) {
+            job.state = RETRY;
+            job.retryCount++;
+            job.injectCode(codeStream);
+        } else if(job.isRecovery()) {
+            job.useLevel = MAX_USE;
+            job.stdout = 'LOGS';
+            job.cleanup();
+        } else {
+            job.stdout = 'FAIL';
+            job.cleanup();
+        }
+    }
+
     function _injectCode(codeStream) {
         var self = this;
 
@@ -274,20 +306,26 @@ var ConfigureDocker = function(config){
             });
 
             client.on('data', function(data) {
-                self.report('Data received ' + data);
+                self.report('data received ' + data);
                 switch(self.state) {
-                    case INPUT_NEW: 
+                    case NEW: 
                         self.instrument('injecting code');
                         codeStream.pipe(client);
                         break;
                     case RETRY:
                         self.instrument('retry attempted');
                         self.state = WAITING;
+                        self.client.setTimeout(400, function(){
+                            self.instrument('socket idle timeout');
+                            retryRecoverFail(self, codeStream);
+                        });
                         break;
                     case WAITING:
                         extractPayload(self, data);
                         self.state = FINISHED;
+                        self.report('about to manually end');
                         self.client.end();
+                        self.report('just to manually end');
                         break;
                 }
             });
@@ -296,7 +334,7 @@ var ConfigureDocker = function(config){
             client.on('finish', function() {
                 self.instrument('client socket finished');
                 switch(self.state) {
-                    case INPUT_NEW:
+                    case NEW:
                         self.state = WAITING;
                         client.resume();
                         break;
@@ -314,12 +352,12 @@ var ConfigureDocker = function(config){
                     case WAITING:
                         self.client.destroy();
                         delete self.client;
-                        if(self.retryCount <= 2) {
+                        if(self.retryCount <= MAX_RETRY) {
                             self.state = RETRY;
                             self.retryCount++;
                             self.injectCode(codeStream);
                         } else {
-                            // TODO
+                            // NOT ACTUALLY REACHED
                             self.cleanup();
                         }
                         break;
@@ -327,9 +365,10 @@ var ConfigureDocker = function(config){
             });
 
             var sin, sout, serr;
-            sin = self.state === INPUT_NEW ? '1' : '0';
+            sin = self.state === NEW ? '1' : '0';
             sout = serr = '1';
-            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
+            var slogs = self.isRecovery() ? 'logs=1&' : '';
+            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?'+slogs+'stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
         });
 
