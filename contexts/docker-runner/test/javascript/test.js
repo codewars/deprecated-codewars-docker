@@ -1,6 +1,9 @@
-startTime = Date.now();
-function someFunction(n) {
-  console.log('inside function was: ' + n);
+function sFact(num) {
+    var rval=1;
+    for (var i = 2; i <= num; i++)
+        rval = rval * i;
+    return rval;
 }
-someFunction('testing');
+
+console.log(sFact(140));
 ␄

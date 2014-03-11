@@ -3,10 +3,19 @@
 */ 
 var DockerIO = require('docker.io'),
     poolModule = require('generic-pool'),
+    util = require('util'),
     streams = require('stream'),
     streamBuffers = require('stream-buffers'),
     fs = require('fs'),
     net = require('net');
+
+// MOVE INTO JOB PROTO
+var states = [];
+var INPUT_NEW = 0,
+    RETRY = 1,
+    WAITING = 2,
+    FINISHED = 3;
+var stateNames = ['INPUT_NEW', 'RETRY', 'WAITING', 'FINISHED'];
 
 
 var ConfigureDocker = function(config){
@@ -62,12 +71,11 @@ var ConfigureDocker = function(config){
                 job.stdout = '';
                 job.stderr = '';
                 job.initialTime = Date.now();
-                if(typeof job.replied !== 'undefined') {
-                   console.log('replied WAS: '+job.replied); 
-                }
-                job.replied = false;
                 job.finalCB = cfinalCB;
-                _setupInject.call(job, codeStream);
+                job.state = INPUT_NEW;
+                job.retryCount = 0;
+                job.report('job acquired');
+                job.injectCode(codeStream);
             });
         };
 
@@ -92,33 +100,40 @@ var ConfigureDocker = function(config){
             };
 
             var _instrument = function(optMessage) {
-                var id = !!this.id ? this.id.substring(0,13) : 'NONE';
-
+                var reportString = optMessage || '';
                 if(!!this.initialTime) {
                     this.curTime = this.curTime || this.initialTime;
                     var now = Date.now();
-                    console.log('job '+id+': total='+(now-this.initialTime)+' block='+(now-this.curTime), optMessage); 
+                    var reportString = util.format('total=%d block=%d %s', 
+                            (now-this.initialTime), (now-this.curTime), reportString);
                     this.curTime = now; 
-                } else console.log('job '+id+': ', optMessage);
+                } 
+
+                this.report(reportString);
             }
 
             var _report = function(optMessage) {
+                var state = this.state >= WAITING && this.retryCount > 0 ? 
+                    util.format('%s (RETRY #%d)', stateNames[this.state], this.retryCount) : stateNames[this.state];
                 var id = !!this.id ? this.id.substring(0,13) : 'NONE';
-                console.log('job '+id+': ', optMessage);
+                console.log('job %s: %s %s', id, state, optMessage);
             }
-
+            
             var job = function(){
                 this.id = undefined;
                 this.stdout = '';
                 this.stderr = '';
+                this.state = INPUT_NEW;
+                this.retryCount = 0;
                 this.statusCode = undefined;
                 this.duration = null;
                 this.initialTime = undefined;
                 this.curTime = undefined;
+                this.injectCode = _injectCode;
                 this.finalCB = defaultCB;
                 this.instrument = _instrument;
                 this.report = _report;
-                this.cleanup = _cleanup; // out of order now
+                this.cleanup = _cleanup;
             }
             job.prototype = this;
             
@@ -137,8 +152,6 @@ var ConfigureDocker = function(config){
                                 job.id = res.Id;
                                 thisRunner.docker.containers.start(job.id, function(err, result) {
                                    if(err) throw err;
-                                   //_setupInject.call(job);
-                                   //_setupOutput.call(job, {});
                                    callback(job);
                                 });
                             } else callback(new Error('No ID returned from docker create'), null);
@@ -152,8 +165,8 @@ var ConfigureDocker = function(config){
                 idleTimeoutMillis: 9000000,
                 refreshIdle: false,
                 max: 60,
-                min: 40, 
-                log: true // can also be a function
+                min: 30, 
+                log: false // can also be a function
             });
         }
         return thisRunner;
@@ -224,96 +237,107 @@ var ConfigureDocker = function(config){
     }
 */
 
-    // outputOnly is for the repeated attempts to grab stdout
-    // Make this a regular job function which resets self.client if necessary
-    // this will allow us to share functions
-    function _setupInject(codeStream, outputOnly) {
-        var outputOnly = outputOnly || false;
+    // Logs would require a smart extraction + placeholder if ongoing
+    function extractPayload(job, data) {
+        job.instrument('extracting payload');
+        while(data !== null) {
+            var payload = '';
+            if(job.runOpts.Tty) {
+                payload = data.slice(); 
+                //job.report('payload type: ' + (typeof payload));
+                job.stdout += payload;
+            } else {
+                var type = data.readUInt8(0);
+                //job.report('type is : '+type);
+                var size = data.readUInt32BE(4);
+                //job.report('data size is : '+data.length);
+                //job.report('size is : '+size);
+                payload = data.slice(8, size+8);
+                //job.report('payload is: '+payload);
+                if(payload == null) break;
+                if(type == 2) job.stderr += payload;
+                else if(type == 1) job.stdout += payload;
+                else job.report('Problem with streaming API - check version in config!\nDiscarding...');
+            }
+            data = null; // only loop for log traversal
+        }
+    }
+
+    function _injectCode(codeStream) {
         var self = this;
 
-        var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname);
-
-        client.on('connect', function() { 
-            var sin, sout, serr;
-            sin = outputOnly ? '0' : '1';
-            sout = serr = '1';
-            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
-                'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
+        var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
 
             client.on('error', function(err) {
                self.report('error on socket: ', err);
                // cb(err);
             });
 
-            // change codeStream to (eventually) self.client.hasConnected and self.client.hasReplied - or a STATE VARIABLE
-            client.on('data', function(data) { 
-                if(typeof codeStream.spent === 'undefined' || !codeStream.spent) {
-                    self.report('received initial socket data: ' + data);
-                    if(outputOnly) {
-                        codeStream.spent = true;
-                        codeStream.waiting = true;
-                        // holy shit
-                        setTimeout(function(){
-                            client.end();
-                            _setupInject.call(self, {}, true);
-                        }, 2000); // change this?
-                        return; 
-                    }
-                    self.report('injecting code');
-                    codeStream.pipe(client);
-                } else {
-                    self.report('data received on output\n' + data);
-                    codeStream.waiting = false;
-                    while(data !== null) { // no longer need while loop, see last instruction 
-                        self.replied = true;
-                        var payload;
-                        if(self.runOpts.Tty) {
-                            payload = data.slice(); // ???
-                            self.report('payload type: ' + (typeof payload));
-                            self.stdout += payload;
-                        } else {
-                            var type = data.readUInt8(0);
-                            //self.report('type is : '+type);
-                            var size = data.readUInt32BE(4);
-                            self.report('data size is : '+data.length);
-                            self.report('size is : '+size);
-                            payload = data.slice(8, size+8);
-                            //self.report('payload is: '+payload);
-                            if(payload == null) break;
-                            if(type == 2) self.stderr += payload;
-                            else if(type == 1) self.stdout += payload;
-                            else self.report('Problem with streaming API - check version in config!\nDiscarding...');
-                        }
-                        data = null; // not concerned with chunking or logs yet.
-                    }
-                    self.report('destroying socket and cleanup...');
-                    client.end(); // see if this calls finish?
-                    self.cleanup();
+            client.on('data', function(data) {
+                self.report('Data received ' + data);
+                switch(self.state) {
+                    case INPUT_NEW: 
+                        self.instrument('injecting code');
+                        codeStream.pipe(client);
+                        break;
+                    case RETRY:
+                        self.instrument('retry attempted');
+                        self.state = WAITING;
+                        break;
+                    case WAITING:
+                        extractPayload(self, data);
+                        self.state = FINISHED;
+                        self.client.end();
+                        break;
                 }
             });
 
             // code has been injected
             client.on('finish', function() {
-                self.report('client socket finished');
-                codeStream.spent = true;
-                if(outputOnly) {
-                    client.destroy();
-                    delete client;
-                } else codeStream.unpipe(client);
+                self.instrument('client socket finished');
+                switch(self.state) {
+                    case INPUT_NEW:
+                        self.state = WAITING;
+                        client.resume();
+                        break;
+                    case FINISHED:
+                        self.client.destroy();
+                        delete self.client;
+                        self.cleanup();
+                        break;
+                }
             });
 
-            // Verify this is ended, look into any necessary cleanup
-            // maybe this is causing destroy to be called more than once?!
             client.on('end', function() {
-                self.report('client socket ended');
-                if(!self.replied) {
-                  client.destroy();
-                  delete client;
-                  _setupInject.call(self, {}, true);
-                } // else self.cleanup(); // move this back into callback
+                self.instrument('client socket ended');
+                switch(self.state) {
+                    case WAITING:
+                        self.client.destroy();
+                        delete self.client;
+                        if(self.retryCount <= 2) {
+                            self.state = RETRY;
+                            self.retryCount++;
+                            self.injectCode(codeStream);
+                        } else {
+                            // TODO
+                            self.cleanup();
+                        }
+                        break;
+                }
             });
+
+            var sin, sout, serr;
+            sin = self.state === INPUT_NEW ? '1' : '0';
+            sout = serr = '1';
+            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
+                'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
         });
+
+        self.client = client;
+        // make this a callback instead like before
+        return client;
     }
+
     return { createRunner: _makeRunner }
 };
 
