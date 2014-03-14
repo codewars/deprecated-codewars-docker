@@ -7,20 +7,22 @@ var DockerIO = require('docker.io'),
     net = require('net');
 
 var TIMEOUT = 3200; // some wiggle room for load
-var MAX_RETRY = 20;
-//var RETRY_GROWTH_FACTOR = 5;
+var MAX_RETRY = 50;
+//var RETRY_GROWTH_FACTOR = 2;
 var RETRY_GROWTH_FACTOR = 0; // sets delay to 1 ms
 // if at any point we receive confusing errors,
 // setting useLevel = MAX_USE will mark the container
 // for destruction.
-var MAX_USE = 50;
+var MAX_USE = 1000;
 
 var states = [];
 var NEW = 0,
     RETRY = 1,
     WAITING = 2,
-    FINISHED = 3;
-var stateNames = ['NEW', 'RETRY', 'WAITING', 'FINISHED'];
+    FINISHED = 3,
+    RECOVERY = 4,
+    FAIL = 5;
+var stateNames = ['NEW', 'RETRY', 'WAITING', 'FINISHED', 'RECOVERY', 'FAIL'];
 
 
 var ConfigureDocker = function(config){
@@ -90,8 +92,10 @@ var ConfigureDocker = function(config){
             var _cleanup = function(healthCheck) {
                 var job = this;
 
-                if(!!healthCheck) 
+                if(!!healthCheck) {
                     performHealthCheck(job);
+                    return; // we will resume after inspect
+                }
 
                 if(job.useLevel < MAX_USE) {
                     job.report('releasing container...');
@@ -105,6 +109,7 @@ var ConfigureDocker = function(config){
                     delete job.solutionTime;
                     delete job.duration;
                     delete job.responseTime;
+                    job.statusCode = 200;
                     job.state = NEW;
                     job.retryCount = 0;
                     job.pool.release(this); 
@@ -146,7 +151,8 @@ var ConfigureDocker = function(config){
                 this.state = NEW;
                 this.useLevel = 0;
                 this.retryCount = 0;
-                this.statusCode = undefined; // FIXME
+                this.logBytes = 0;
+                this.statusCode = 200;
                 this.duration = null;
                 this.initialTime = undefined;
                 this.curTime = undefined;
@@ -183,18 +189,23 @@ var ConfigureDocker = function(config){
                 },
                 destroy: function(job) {
                     job.report('self destruct');
-                    job.docker.containers.kill(job.id, function(err) {
-                        if(err) {
-                            job.report('Container could not be killed', err);
-                            // TODO Remote API v0.10 allows forced removal
-                            delete job;
-                        } else {
-                            job.docker.containers.remove(job.id, function(err) {
-                                if(err) job.report('Container could not be removed', err);
+                    // try setTimeout so pool can get back to business
+                    setTimeout(function() {
+                        job.docker.containers.kill(job.id, function(err) {
+                            if(err) {
+                                job.report('Container could not be killed', err);
+                                // TODO Remote API v0.10 allows forced removal
                                 delete job;
-                            });
-                        }
-                    });
+                            } 
+                            /* Had trouble with removal before
+                            else {
+                                job.docker.containers.remove(job.id, function(err) {
+                                    if(err) job.report('Container could not be removed', err);
+                                    delete job;
+                                });
+                            }*/
+                        });
+                    }, 10);
                 },
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
@@ -223,30 +234,49 @@ var ConfigureDocker = function(config){
         });
     }
 
-    // Logs would require a smart extraction + placeholder if ongoing
     function extractPayload(job, data) {
         job.instrument('extracting payload');
-        while(data !== null) {
-            var payload = '';
-            if(job.runOpts.Tty) {
-                payload = data.slice(); 
-                job.report('payload type: ' + (typeof payload));
-                job.stdout += payload;
-            } else {
-                var type = data.readUInt8(0);
-                job.report('type is : '+type);
-                var size = data.readUInt32BE(4);
-                job.report('data size is : '+data.length);
-                job.report('size is : '+size);
-                payload = data.slice(8, size+8);
-                job.report('payload is: '+payload);
-                if(payload == null) break;
-                if(type == 2) job.stderr += payload;
-                else if(type == 1) job.stdout += payload;
-                else job.report('Problem with streaming API - check version in config!\nDiscarding...');
+        var payload = '';
+        if(job.runOpts.Tty) {
+            payload = data.slice(); 
+            job.report('payload type: ' + (typeof payload));
+            job.stdout += payload;
+        } else {
+            var type = data.readUInt8(0);
+            job.report('type is : '+type);
+            var size = data.readUInt32BE(4);
+            job.report('data size is : '+data.length);
+
+            // if data too small, it may be a normal retrieval
+            // testing as we may have come from recoverLogs
+            if(data.length > size+8) {
+                job.state = FAIL;
+                job.useLevel = MAX_USE;
+                job.report('Data was unexpectedly large, discarding');
+                var toError = new Error("Code timed out");
+                toError.timeout = true;
+                return;
             }
-            data = null; // only loop for log traversal
+            job.logBytes += data.length; // recovery pointer
+            job.report('size is : '+size);
+            if((size + 8 < data.length))
+                job.report('DATA TOO LONG?');
+            payload = data.slice(8, size+8);
+            job.report('payload is: '+payload);
+            if(payload == null) return; // TODO fail state
+            if(type == 2) job.stderr += payload;
+            else if(type == 1) job.stdout += payload;
+            else job.report('Problem with streaming API - check version in config!\nDiscarding...');
         }
+    }
+
+    // Logs would require a smart extraction + placeholder if ongoing
+    function recoverLogs(job, data) {
+        var detailStr = util.format("data=%d pointer=%d", data.length, job.logBytes);
+        job.instrument("Attempting log recovery: "+detailStr);
+
+        if(data.length < job.logBytes+8) extractPayload(job, data);
+        else extractPayload(job, data.slice(job.logBytes));
     }
 
     function retryRecoverFail(job, codeStream, cb) {
@@ -254,10 +284,12 @@ var ConfigureDocker = function(config){
         delete job.client;
         if(!job.isRecovery()) {
             job.state = RETRY;
-            // Delay will inrease with each retry.
+            // Delay will inrease with each retry if exponent.
             var timeRemaining = TIMEOUT-(Date.now()-job.injectTime);
+            timeRemaining = Math.max(timeRemaining, 0);
             var delay = Math.pow(job.retryCount++, RETRY_GROWTH_FACTOR);
             if(timeRemaining < delay) {
+                job.state = RECOVERY;
                 delay = timeRemaining;
                 job.retryCount = MAX_RETRY+100; // to obviate in logs
             }
@@ -266,6 +298,8 @@ var ConfigureDocker = function(config){
                 job.injectCodeOrMonitor(codeStream, cb);
             }, delay);
         } else {
+            // In this case we failed to recover, just report timeout
+            job.report('In forbidden block...');
             var toError = new Error("Code timed out");
             toError.timeout = true;
             cb(toError, job);
@@ -291,8 +325,9 @@ var ConfigureDocker = function(config){
                         self.injectTime = Date.now();
                         codeStream.pipe(client);
                         break;
+                    case RECOVERY:
                     case RETRY:
-                        self.instrument('retry attempted');
+                        self.instrument('retry attempted '+data);
                         self.state = WAITING;
                         self.client.setTimeout(200, function(){
                             self.instrument('socket idle timeout');
@@ -300,9 +335,16 @@ var ConfigureDocker = function(config){
                         });
                         break;
                     case WAITING:
-                        extractPayload(self, data);
-                        self.duration = Date.now() - self.injectTime;
-                        self.state = FINISHED;
+                        if(self.isRecovery()) {
+                            recoverLogs(self, data);
+                            self.duration = null;
+                            if(self.state !== FAIL)
+                                self.state = FINISHED;
+                        } else {
+                            extractPayload(self, data);
+                            self.duration = (Date.now() - self.injectTime);
+                            self.state = FINISHED;
+                        }
                         self.client.end();
                         break;
                 }
@@ -317,6 +359,7 @@ var ConfigureDocker = function(config){
                         self.state = WAITING;
                         client.resume();
                         break;
+                    case FAIL:
                     case FINISHED:
                         self.client.destroy();
                         delete self.client;
@@ -339,8 +382,8 @@ var ConfigureDocker = function(config){
             var sin, sout, serr;
             sin = self.state === NEW ? '1' : '0';
             sout = serr = '1';
-            var slogs = ''; // no more log traversal attempts
-//            var slogs = self.isRecovery() ? 'logs=1&' : '';
+//            var slogs = ''; // no more log traversal attempts
+            var slogs = self.isRecovery() ? 'logs=1&' : '';
 
             client.write('POST /'+config.version+'/containers/' + self.id + '/attach?'+slogs+'stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
