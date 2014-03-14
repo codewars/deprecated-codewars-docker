@@ -49,7 +49,11 @@ var express = require('express'),
 
     this.createStreamForScript = function(language, script) {
         var readStrBuffer = new streamBuffers.ReadableStreamBuffer();
+        var eof = '0ae290840a';
+        var tmp = new Buffer(5);
+        tmp.write(eof, 0, 5, 'hex');
         readStrBuffer.put(script, 'utf8');
+        readStrBuffer.put(tmp, 'hex');
         codeStream = new streams.Readable().wrap(readStrBuffer);
         codeStream.on('error', function(err) {
             console.log('INPUT had an error: '+err);

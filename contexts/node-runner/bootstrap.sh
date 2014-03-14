@@ -2,7 +2,7 @@
 EOT_CH="␄"
 # Allow close means actual EOF will be interpreted
 # as an end-of-script. This will allow StdinOnce: true
-# to be sufficient.
+# to be sufficient. May come in handy for certain katas.
 ALLOW_CLOSE=false
 
 RUNNER=${RUNNER:-javascript}
@@ -14,6 +14,7 @@ nvm use v0.10.22 > /dev/null 2>&1
 
 SCRIPT=''
 
+# TODO exit with a codewars internal error code
 errout () {
     { echo "$1" 1>&2; exit 1; }
 }
@@ -28,10 +29,14 @@ doRunner () {
     fi
 }
 
+KATA_OUT='ERROR: stdout not assigned'
 while read INPUT; do
     if [ "$INPUT" = "$EOT_CH" ]
     then
-        doRunner "${SCRIPT}"
+        # Temporary hack to fix multi-line output
+        KATA_OUT=`doRunner "${SCRIPT}"`
+        echo -e "$KATA_OUT"
+        KATA_OUT='ERROR: stdout not assigned'
         SCRIPT=''
     else
         SCRIPT="${SCRIPT}${INPUT}"

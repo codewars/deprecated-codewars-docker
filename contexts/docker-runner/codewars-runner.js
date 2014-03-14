@@ -1,6 +1,3 @@
-/* We had a ready setup where did setupInject on create and then after every attach
-*  Now for debugging we are doing setupInject just before attach
-*/ 
 var DockerIO = require('docker.io'),
     poolModule = require('generic-pool'),
     util = require('util'),
@@ -46,7 +43,6 @@ var ConfigureDocker = function(config){
         // Prototype chain is such that job shares all functionality
         var cw = function() {
             this.docker = docker;
-            //this.injectCode = _injectCode; // try closing over client
             //this.postInject = _postInjectHandlerReattach;
             this.postInject = function() { this.report('fake postInject callback, SHOULD NOT BE CALLED'); };
             //this.postInject = function() { this.cleanup.call(this);};
@@ -63,17 +59,16 @@ var ConfigureDocker = function(config){
                 if(err) throw err;
                 codeStream.inputSize = stat.size; 
                 runnerThis.run(codeStream, finalCB);
-                //_setupOutput.call(job, {});
             });
         };
 
-        cw.prototype.run = function(codeStream, cfinalCB) {
+        cw.prototype.run = function(codeStream, cFinalCB) {
             this.pool.acquire(function(err, job){
                 if(err) throw err; 
                 job.stdout = '';
                 job.stderr = '';
                 job.initialTime = Date.now();
-                job.finalCB = cfinalCB;
+                job.finalCB = cFinalCB;
                 job.state = NEW;
                 job.retryCount = 0;
                 job.report('job acquired');
@@ -121,7 +116,7 @@ var ConfigureDocker = function(config){
 
             // any changing criteria for last ditch log recovery attempt
             var _isRecovery = function() {
-                return this.retryCount >= MAX_RETRY;
+                return this.retryCount > MAX_RETRY;
             }
 
             var _report = function(optMessage) {
@@ -179,8 +174,8 @@ var ConfigureDocker = function(config){
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
                 max: 60,
-                min: 40, 
-                log: true // can also be a function
+                min: 1, 
+                log: false // can also be a function
             });
         }
         return thisRunner;
@@ -258,16 +253,16 @@ var ConfigureDocker = function(config){
             var payload = '';
             if(job.runOpts.Tty) {
                 payload = data.slice(); 
-                //job.report('payload type: ' + (typeof payload));
+                job.report('payload type: ' + (typeof payload));
                 job.stdout += payload;
             } else {
                 var type = data.readUInt8(0);
-                //job.report('type is : '+type);
+                job.report('type is : '+type);
                 var size = data.readUInt32BE(4);
-                //job.report('data size is : '+data.length);
-                //job.report('size is : '+size);
+                job.report('data size is : '+data.length);
+                job.report('size is : '+size);
                 payload = data.slice(8, size+8);
-                //job.report('payload is: '+payload);
+                job.report('payload is: '+payload);
                 if(payload == null) break;
                 if(type == 2) job.stderr += payload;
                 else if(type == 1) job.stdout += payload;
@@ -315,7 +310,7 @@ var ConfigureDocker = function(config){
                     case RETRY:
                         self.instrument('retry attempted');
                         self.state = WAITING;
-                        self.client.setTimeout(400, function(){
+                        self.client.setTimeout(200, function(){
                             self.instrument('socket idle timeout');
                             retryRecoverFail(self, codeStream);
                         });
@@ -332,6 +327,7 @@ var ConfigureDocker = function(config){
 
             // code has been injected
             client.on('finish', function() {
+
                 self.instrument('client socket finished');
                 switch(self.state) {
                     case NEW:
