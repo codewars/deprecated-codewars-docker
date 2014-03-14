@@ -4,6 +4,8 @@ if [ "$1" == "--hard" ]; then
 elif [ "$1" == "--all" ]; then 
     docker ps -a | grep noderunner | awk '{print $1}' | xargs docker kill
     docker ps -a | grep noderunner | awk '{print $1}' | xargs docker rm
+    docker ps -a | grep pyrunner | awk '{print $1}' | xargs docker kill
+    docker ps -a | grep pyrunner | awk '{print $1}' | xargs docker rm
     docker kill controller && docker rm controller
 else
     docker stop controller && docker rm controller

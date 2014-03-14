@@ -29,14 +29,16 @@ doRunner () {
     fi
 }
 
-KATA_OUT='ERROR: stdout not assigned'
+KATA_OUT=''
 while read INPUT; do
     if [ "$INPUT" = "$EOT_CH" ]
     then
-        # Temporary hack to fix multi-line output
-        KATA_OUT=`doRunner "${SCRIPT}"`
+        #KATA_OUT=`doRunner "${SCRIPT}"`
+        KATA_OUT=$({ 
+        doRunner "${SCRIPT}"  2>&1 1>&3 | xargs -0 /usr/local/bin/errorhack 
+        } 3>&1 )
         echo -e "$KATA_OUT"
-        KATA_OUT='ERROR: stdout not assigned'
+        KATA_OUT=''
         SCRIPT=''
     else
         SCRIPT="${SCRIPT}${INPUT}"

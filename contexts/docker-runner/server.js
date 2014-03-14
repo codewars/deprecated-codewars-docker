@@ -25,9 +25,13 @@ var express = require('express'),
     }
 
 
-    function getError(errString) {
+    function errResponse(error) {
+        error = error || new Error();
+        var timeout = !!error.timeout;
+        errString = error.message || "Internal Error";
         return {
             statusCode: 500,
+            timeout: timeout,
             stdout: null,
             stderr: errString
         };
@@ -55,9 +59,6 @@ var express = require('express'),
         readStrBuffer.put(script, 'utf8');
         readStrBuffer.put(tmp, 'hex');
         codeStream = new streams.Readable().wrap(readStrBuffer);
-        codeStream.on('error', function(err) {
-            console.log('INPUT had an error: '+err);
-        });
         return codeStream;
     }
 
@@ -68,8 +69,12 @@ var express = require('express'),
 
     app.get('/:runner/test', function(req, res) {
         var startTime = Date.now();
-        runners[req.params.runner].test(function() {
-            res.send(result(this, startTime));
+        runners[req.params.runner].test(function(err, job) {
+            if(!!err) res.send(errResponse(err));
+            else if(!job) res.send(errResponse());
+            else res.send(result(job, startTime));
+            
+            if(!!job) job.cleanup(!!err);
         });
     });
 
@@ -82,8 +87,12 @@ var express = require('express'),
             return;
         }
 
-        runners[req.params.runner].run(cStream, function() {
-            res.send(result(this, startTime));
+        runners[req.params.runner].run(cStream, function(err, job) {
+            if(!!err) res.send(errResponse(err));
+            else if(!job) res.send(errResponse());
+            else res.send(result(job, startTime));
+            
+            if(!!job) job.cleanup(!!err);
         });
     });
     app.listen(this.port);

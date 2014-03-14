@@ -28,14 +28,14 @@ config.runners = [
         image: 'noderunner',
         cmd: ['/usr/local/bin/run'],
         extension: 'coffee',
-        pool: false
+        pool: false 
     },
     {
         language: 'python',
         image: 'pyrunner',
         cmd: ['/usr/local/bin/run', '/opt/ve/pyrunner/bin/python', '/opt/apps/pyrunner/run.py'],
         extension: 'py',
-        pool: false
+        pool: false 
     }];
 
 module.exports = config;

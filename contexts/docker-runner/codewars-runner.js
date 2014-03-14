@@ -6,7 +6,13 @@ var DockerIO = require('docker.io'),
     fs = require('fs'),
     net = require('net');
 
-var MAX_RETRY = 2;
+var TIMEOUT = 3200; // some wiggle room for load
+var MAX_RETRY = 20;
+//var RETRY_GROWTH_FACTOR = 5;
+var RETRY_GROWTH_FACTOR = 0; // sets delay to 1 ms
+// if at any point we receive confusing errors,
+// setting useLevel = MAX_USE will mark the container
+// for destruction.
 var MAX_USE = 50;
 
 var states = [];
@@ -43,10 +49,8 @@ var ConfigureDocker = function(config){
         // Prototype chain is such that job shares all functionality
         var cw = function() {
             this.docker = docker;
-            //this.postInject = _postInjectHandlerReattach;
-            this.postInject = function() { this.report('fake postInject callback, SHOULD NOT BE CALLED'); };
-            //this.postInject = function() { this.cleanup.call(this);};
         };
+
         // sets language/cmd/etc
         cw.prototype = runnerConfig; 
         cw.prototype.runOpts = options;
@@ -62,17 +66,11 @@ var ConfigureDocker = function(config){
             });
         };
 
-        cw.prototype.run = function(codeStream, cFinalCB) {
+        cw.prototype.run = function(codeStream, finalCB) {
             this.pool.acquire(function(err, job){
                 if(err) throw err; 
-                job.stdout = '';
-                job.stderr = '';
                 job.initialTime = Date.now();
-                job.finalCB = cFinalCB;
-                job.state = NEW;
-                job.retryCount = 0;
-                job.report('job acquired');
-                job.injectCode(codeStream);
+                job.injectCodeOrMonitor(codeStream, finalCB);
             });
         };
 
@@ -89,15 +87,30 @@ var ConfigureDocker = function(config){
                 console.log('Result:\n', result);
             }
 
-            var _cleanup = function() {
-                this.finalCB.call(this);
-                this.useLevel++;
-                if(this.useLevel < MAX_USE) {
-                    this.report('releasing container...');
-                    this.pool.release(this); 
+            var _cleanup = function(healthCheck) {
+                var job = this;
+
+                if(!!healthCheck) 
+                    performHealthCheck(job);
+
+                if(job.useLevel < MAX_USE) {
+                    job.report('releasing container...');
+                    job.stdout = '';
+                    job.stderr = '';
+                    if(!!job.client) {
+                        job.client.destroy();
+                        delete job.client;
+                    }
+                    delete job.injectTime;
+                    delete job.solutionTime;
+                    delete job.duration;
+                    delete job.responseTime;
+                    job.state = NEW;
+                    job.retryCount = 0;
+                    job.pool.release(this); 
                 } else {
-                    this.report('forgetting container at use='+this.useLevel);
-                    this.pool.destroy(this);
+                    job.report('removing container at use='+job.useLevel);
+                    job.pool.destroy(this);
                 }
             };
 
@@ -116,7 +129,7 @@ var ConfigureDocker = function(config){
 
             // any changing criteria for last ditch log recovery attempt
             var _isRecovery = function() {
-                return this.retryCount > MAX_RETRY;
+                return this.retryCount >= MAX_RETRY;
             }
 
             var _report = function(optMessage) {
@@ -133,13 +146,13 @@ var ConfigureDocker = function(config){
                 this.state = NEW;
                 this.useLevel = 0;
                 this.retryCount = 0;
-                this.statusCode = undefined;
+                this.statusCode = undefined; // FIXME
                 this.duration = null;
                 this.initialTime = undefined;
                 this.curTime = undefined;
                 this.isRecovery = _isRecovery;
-                this.injectCode = _injectCode;
-                this.finalCB = defaultCB;
+                this.injectCodeOrMonitor = _injectCodeOrMonitor;
+                this.defaultCB = defaultCB;
                 this.instrument = _instrument;
                 this.report = _report;
                 this.cleanup = _cleanup;
@@ -169,82 +182,46 @@ var ConfigureDocker = function(config){
 
                 },
                 destroy: function(job) {
-                    console.log('DESTROYING '+job.id+' although container may not be removed!')
+                    job.report('self destruct');
+                    job.docker.containers.kill(job.id, function(err) {
+                        if(err) {
+                            job.report('Container could not be killed', err);
+                            // TODO Remote API v0.10 allows forced removal
+                            delete job;
+                        } else {
+                            job.docker.containers.remove(job.id, function(err) {
+                                if(err) job.report('Container could not be removed', err);
+                                delete job;
+                            });
+                        }
+                    });
                 },
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
                 max: 60,
-                min: 1, 
+                min: 40, 
                 log: false // can also be a function
             });
         }
         return thisRunner;
     }
 
-/*
-    // After we encounter this, we may want to release the job 
-    // back into the pool instead of destroying it - depends on use case
-    function _postInjectHandlerInspect(err, client) {
-        if(err) throw err;
+    // perform health check after timeout
+    function performHealthCheck(job) {
+        job.instrument('Job failed, inspecting container');
 
-        var self = this;
-        this.instrument('inject completed, calling inspect directly');
-        this.docker.containers.inspect(this.id, function(err, details) {
-            if(err) throw err;
-            self.instrument('inspect returned');
+        job.docker.containers.inspect(job.id, function(err, details) {
+            if(err) job.report('Health check error', err);
 
-            if(!!details.State.Running) {
-                self.report('Inspect after finish returned running!');
-                // is this wise under load?
-                self.postInject(null, client);
-                return;
+            if(err || !details.State.Running) {
+                errMsg = util.format('Health Check: %s', (err? err.message : 'container is not running/responding'));
+                job.report(errMsg);
+                job.useLevel = MAX_USE;
             }
 
-            if(!details.State.StartedAt || !details.State.FinishedAt)  {
-                self.report("cannot get duration of a container without start/finish");
-            } else {
-                var ss = new Date(details.State.StartedAt).getTime();
-                var ff = new Date(details.State.FinishedAt).getTime();
-                self.duration = (ff-ss);
-            }
-            self.statusCode = details.StatusCode;
-            self.cleanup();
-        }); 
-    }
-
-    function _postInjectHandlerWait(err, client) {
-        if(err) throw err;
-
-        var self = this;
-        this.instrument('inject completed, about to wait container');
-           self.docker.containers.wait(self.id, function(err, data) {
-               if(err) throw err;
-               self.instrument('Container returned from wait with statusCode', data.statusCode);
-               self.statusCode = data.StatusCode;
-                   // do logs in finalCB, cleanup after res.send
-               self.cleanup();
-           });
-    }
-
-    function _postInjectHandlerStart(err, client) {
-        if(err) throw err;
-
-        var self = this;
-        this.instrument('inject completed, about to start container');
-        this.docker.containers.start(self.id, function(err, result) {
-           if(err) throw err;
-           self.instrument('Container started, about to wait!!!');
-
-           self.docker.containers.wait(self.id, function(err, data) {
-               if(err) throw err;
-               self.instrument('Container returned from wait with statusCode', data.statusCode);
-               self.statusCode = data.StatusCode;
-                   // do logs in finalCB, cleanup after res.send
-               self.cleanup();
-           });
+            job.cleanup();
         });
     }
-*/
 
     // Logs would require a smart extraction + placeholder if ongoing
     function extractPayload(job, data) {
@@ -272,32 +249,38 @@ var ConfigureDocker = function(config){
         }
     }
 
-    function retryRecoverFail(job, codeStream) {
+    function retryRecoverFail(job, codeStream, cb) {
         job.client.destroy();
         delete job.client;
-
-        if(job.retryCount <= MAX_RETRY) {
+        if(!job.isRecovery()) {
             job.state = RETRY;
-            job.retryCount++;
-            job.injectCode(codeStream);
-        } else if(job.isRecovery()) {
-            job.useLevel = MAX_USE;
-            job.stdout = 'LOGS';
-            job.cleanup();
+            // Delay will inrease with each retry.
+            var timeRemaining = TIMEOUT-(Date.now()-job.injectTime);
+            var delay = Math.pow(job.retryCount++, RETRY_GROWTH_FACTOR);
+            if(timeRemaining < delay) {
+                delay = timeRemaining;
+                job.retryCount = MAX_RETRY+100; // to obviate in logs
+            }
+            job.report('waiting '+delay+'ms to retry');
+            setTimeout(function() {
+                job.injectCodeOrMonitor(codeStream, cb);
+            }, delay);
         } else {
-            job.stdout = 'FAIL';
-            job.cleanup();
-        }
+            var toError = new Error("Code timed out");
+            toError.timeout = true;
+            cb(toError, job);
+        } 
     }
 
-    function _injectCode(codeStream) {
+    function _injectCodeOrMonitor(codeStream, CB) {
         var self = this;
+        CB = CB || self.defaultCB;
 
         var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
+            self.client = client;
 
             client.on('error', function(err) {
-               self.report('error on socket: ', err);
-               // cb(err);
+               CB(err, self);
             });
 
             client.on('data', function(data) {
@@ -305,6 +288,7 @@ var ConfigureDocker = function(config){
                 switch(self.state) {
                     case NEW: 
                         self.instrument('injecting code');
+                        self.injectTime = Date.now();
                         codeStream.pipe(client);
                         break;
                     case RETRY:
@@ -312,15 +296,14 @@ var ConfigureDocker = function(config){
                         self.state = WAITING;
                         self.client.setTimeout(200, function(){
                             self.instrument('socket idle timeout');
-                            retryRecoverFail(self, codeStream);
+                            retryRecoverFail(self, codeStream, CB);
                         });
                         break;
                     case WAITING:
                         extractPayload(self, data);
+                        self.duration = Date.now() - self.injectTime;
                         self.state = FINISHED;
-                        self.report('about to manually end');
                         self.client.end();
-                        self.report('just to manually end');
                         break;
                 }
             });
@@ -337,7 +320,7 @@ var ConfigureDocker = function(config){
                     case FINISHED:
                         self.client.destroy();
                         delete self.client;
-                        self.cleanup();
+                        CB(null, self);
                         break;
                 }
             });
@@ -346,16 +329,9 @@ var ConfigureDocker = function(config){
                 self.instrument('client socket ended');
                 switch(self.state) {
                     case WAITING:
-                        self.client.destroy();
-                        delete self.client;
-                        if(self.retryCount <= MAX_RETRY) {
-                            self.state = RETRY;
-                            self.retryCount++;
-                            self.injectCode(codeStream);
-                        } else {
-                            // NOT ACTUALLY REACHED
-                            self.cleanup();
-                        }
+                        if(!self.isRecovery()) {
+                            retryRecoverFail(self, codeStream, CB);
+                        } else CB(new Error('Unusual state'), self);
                         break;
                 }
             });
@@ -363,13 +339,13 @@ var ConfigureDocker = function(config){
             var sin, sout, serr;
             sin = self.state === NEW ? '1' : '0';
             sout = serr = '1';
-            var slogs = self.isRecovery() ? 'logs=1&' : '';
+            var slogs = ''; // no more log traversal attempts
+//            var slogs = self.isRecovery() ? 'logs=1&' : '';
+
             client.write('POST /'+config.version+'/containers/' + self.id + '/attach?'+slogs+'stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
         });
 
-        self.client = client;
-        // make this a callback instead like before
         return client;
     }
 
