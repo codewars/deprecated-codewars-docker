@@ -25,30 +25,40 @@ var express = require('express'),
     }
 
 
-    function getError(errString) {
+    function errResponse(error) {
+        error = error || new Error();
+        var timeout = !!error.timeout;
+        errString = error.message || "Internal Error";
         return {
             statusCode: 500,
+            timeout: timeout,
             stdout: null,
             stderr: errString
         };
     }
 
     // response format.  Filter errors here.
-    function result(finished) {
+    function result(finished, startTime) {
+        var responseTime = !!startTime ? Date.now()-startTime : null;
+        var timeout = (finished.statusCode == 124);
         return {
             statusCode: finished.statusCode,
+            timeout: timeout,
             stdout: finished.stdout,
-            stderr: finished.stderr
+            stderr: finished.stderr,
+            solutionTime: finished.duration,
+            responseTime: responseTime
         }
     }
 
     this.createStreamForScript = function(language, script) {
         var readStrBuffer = new streamBuffers.ReadableStreamBuffer();
+        var eof = '0ae290840a';
+        var tmp = new Buffer(5);
+        tmp.write(eof, 0, 5, 'hex');
         readStrBuffer.put(script, 'utf8');
+        readStrBuffer.put(tmp, 'hex');
         codeStream = new streams.Readable().wrap(readStrBuffer);
-        codeStream.on('error', function(err) {
-            console.log('INPUT had an error: '+err);
-        });
         return codeStream;
     }
 
@@ -58,18 +68,32 @@ var express = require('express'),
         .use(express.bodyParser());
 
     app.get('/:runner/test', function(req, res) {
-        var resultCallback = function() { res.send(result(job)); }
-        var job = runners[req.params.runner].createJob(resultCallback);
-        job.test();
+        var startTime = Date.now();
+        runners[req.params.runner].test(function(err, job) {
+            if(!!err) res.send(errResponse(err));
+            else if(!job) res.send(errResponse());
+            else res.send(result(job, startTime));
+            
+            if(!!job) job.cleanup(!!err);
+        });
     });
 
     app.post('/:runner/run', function(req, res) {
+        var startTime = Date.now();
         var cStream = createStreamForScript(req.params.runner, req.body.code);
-        if(!!cStream) {
-            var resultCallback = function() { res.send(result(job)); }
-            var job = runners[req.params.runner].createJob(resultCallback);
-            job.run(cStream);
-        } else res.send(getError('Problem streaming from POST'));
+
+        if(!cStream) {
+            res.send(getError('Problem streaming from POST')); 
+            return;
+        }
+
+        runners[req.params.runner].run(cStream, function(err, job) {
+            if(!!err) res.send(errResponse(err));
+            else if(!job) res.send(errResponse());
+            else res.send(result(job, startTime));
+            
+            if(!!job) job.cleanup(!!err);
+        });
     });
     app.listen(this.port);
 })(config);
