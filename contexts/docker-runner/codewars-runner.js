@@ -213,6 +213,16 @@ var ConfigureDocker = function(config){
                 min: 40, 
                 log: false // can also be a function
             });
+
+            // TODO remove all containers from separate list?
+            function gracefulExit() {
+                thisRunner.pool.drain(function() {
+                    thisRunner.pool.destroyAllNow();
+                });
+            }
+
+            process.on('SIGINT', gracefulExit)
+                .on('SIGTERM', gracefulExit);
         }
         return thisRunner;
     }
