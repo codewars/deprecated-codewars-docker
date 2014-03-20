@@ -6,11 +6,8 @@ var config = {
 
 config.dockerOpts = {
     socketPath: false,
-    //host: 'http://docker-bridge',
-    //hostname: 'docker-bridge',
     hostname: '172.17.42.1',
-    //version: 'v1.10',
-    version: 'v1.8',
+    version: 'v1.10',
     port: 6969
 }
 config.dockerOpts.host = 'http://'+config.dockerOpts.hostname;

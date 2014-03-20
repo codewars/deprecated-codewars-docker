@@ -4,7 +4,6 @@ var express = require('express'),
     fs = require('fs'),
     config = require('./config');
 
-
 (function(options) {
 
     var host = options.host || 'localhost';
@@ -18,10 +17,13 @@ var express = require('express'),
     var CodeRunner = require('./codewars-runner')(config);
 
     var runners = {};
+    var arrayOfRunners = [];
 
     for(var rc in options.runners) {
         var runConfig = options.runners[rc];
-        runners[runConfig.language] = CodeRunner.createRunner(runConfig);
+        var aRunner = CodeRunner.createRunner(runConfig);
+        runners[runConfig.language] = aRunner;
+        arrayOfRunners.push(aRunner);
     }
 
 
@@ -66,6 +68,50 @@ var express = require('express'),
     app.use(express.static(__dirname + '/public'))
         .use(express.favicon())
         .use(express.bodyParser());
+
+    app.get('/shutdown', function(req, res) {
+
+        var waitId;
+        var shuttingDown = function() {
+            var fin = arrayOfRunners.some(function(runner){ 
+                return !runner.pool;
+            });
+            if(fin) {
+                clearInterval(waitId);
+                process.exit();
+            } 
+        };
+        waitId = setInterval(shuttingDown, 400);
+
+        arrayOfRunners.forEach(function(runner) {
+            if(!runner.pool) return;
+            runner.pool.drain(function() {
+                console.log('Shutting down pool: '+runner.language);
+                runner.pool.destroyAllNow();
+                runner.pool = false;
+            });
+        });
+        /*
+        for(var lang in runners) {
+            if(!runners[lang].pool) continue;
+
+            runners[lang].pool.drain(function(){
+                console.log('Shutting down pool: '+lang);
+                runners[lang].pool.destroyAllNow();
+                runners[lang].pool = false;
+            });
+        }*/
+    });
+
+    app.get('/:runner/shutdown', function(req, res) {
+        var lang = req.params.runner;
+        if(!!runners[lang].pool) {
+            runners[lang].pool.drain(function() {
+                console.log('Shutting down pool: '+lang);
+                runners[lang].pool.destroyAllNow();
+            });
+        }
+    });
 
     app.get('/:runner/test', function(req, res) {
         var startTime = Date.now();

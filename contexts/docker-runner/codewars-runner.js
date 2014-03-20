@@ -28,8 +28,7 @@ var stateNames = ['NEW', 'RETRY', 'WAITING', 'FINISHED', 'RECOVERY', 'FAIL'];
 var ConfigureDocker = function(config){
 
     // FIXME
-    //config.version = config.version || 'v1.10';
-    config.version = config.version || 'v1.8';
+    config.version = config.version || 'v1.10';
 
     var docker = DockerIO(config.dockerOpts);
 
@@ -189,33 +188,33 @@ var ConfigureDocker = function(config){
                 },
                 destroy: function(job) {
                     job.report('self destruct');
+                    // TODO make synchronous, but handle requests-in-progress
                     // try setTimeout so pool can get back to business
                     setTimeout(function() {
                         job.docker.containers.kill(job.id, function(err) {
                             if(err) {
                                 job.report('Container could not be killed', err);
-                                // TODO Remote API v0.10 allows forced removal
+                                // Remote API v0.10 allows forced removal
                                 delete job;
-                            } 
-                            /* Had trouble with removal before
-                            else {
+                            } else {
                                 job.docker.containers.remove(job.id, function(err) {
                                     if(err) job.report('Container could not be removed', err);
                                     delete job;
                                 });
-                            }*/
+                            }
                         });
                     }, 10);
                 },
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
-                max: 60,
-                min: 40, 
+                max: 3,
+                min: 2, 
                 log: false // can also be a function
             });
 
             // TODO remove all containers from separate list?
             function gracefulExit() {
+                console.log('WHAT THE HECK');
                 thisRunner.pool.drain(function() {
                     thisRunner.pool.destroyAllNow();
                 });
