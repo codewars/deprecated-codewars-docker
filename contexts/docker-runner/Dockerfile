@@ -5,11 +5,12 @@ MAINTAINER Ryan Hewitt "rthewitt.devel@gmail.com"
 USER noderunner
 
 ADD . /opt/docker-runner
+ADD env.sh /usr/local/bin/run
+
+ENV RUNNER runner
 
 # Permissions issue, temporarily freezing deps
 #RUN /opt/apps/docker-runner/install-deps.sh
-
-ADD bootstrap.sh /usr/local/bin/run
 
 # Runs in current shell context
 WORKDIR /opt/docker-runner

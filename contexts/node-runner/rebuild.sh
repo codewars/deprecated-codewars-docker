@@ -1,1 +1,2 @@
-docker build -t "codewars:noderunner" -rm .
+#!/bin/bash
+../../bin/rebuild.sh noderunner $@

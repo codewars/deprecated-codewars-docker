@@ -40,9 +40,10 @@ var express = require('express'),
     // response format.  Filter errors here.
     function result(finished, startTime) {
         var responseTime = !!startTime ? Date.now()-startTime : null;
-        var timeout = (finished.statusCode == 124);
+        var timeout = (finished.exitCode == 124);
         return {
             statusCode: finished.statusCode,
+            exitCode: finished.exitCode,
             timeout: timeout,
             stdout: finished.stdout,
             stderr: finished.stderr,

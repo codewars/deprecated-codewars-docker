@@ -1,1 +1,2 @@
-docker build -t="codewars:pyrunner" -rm .
+#!/bin/bash
+../../bin/rebuild.sh pyrunner $@

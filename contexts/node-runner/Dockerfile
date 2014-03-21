@@ -2,12 +2,14 @@ FROM codewars:nvmnode
 MAINTAINER Ryan Hewitt "rthewitt.devel@gmail.com"
 
 #USER noderunner
-
 ADD bootstrap.sh /usr/local/bin/run
-ADD err.sh /usr/local/bin/errorhack 
+ADD env.sh /usr/local/bin/env.sh
+ADD shim.py /usr/local/bin/run.py
 
 USER nobody
 
-# Runs in current shell context
+#CMD ["/usr/local/bin/run"]
+#ENTRYPOINT ["/usr/bin/python"]
+
 CMD ["/usr/local/bin/run"]
 ENTRYPOINT ["/bin/bash"]

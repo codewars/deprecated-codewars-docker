@@ -28,8 +28,7 @@ var stateNames = ['NEW', 'RETRY', 'WAITING', 'FINISHED', 'RECOVERY', 'FAIL'];
 var ConfigureDocker = function(config){
 
     // FIXME
-    //config.version = config.version || 'v1.10';
-    config.version = config.version || 'v1.8';
+    config.version = config.version || 'v1.10';
 
     var docker = DockerIO(config.dockerOpts);
 
@@ -81,9 +80,10 @@ var ConfigureDocker = function(config){
 
             var defaultCB = function() {
                 var result = {
-                   statusCode: this.statusCode,
-                   stdout: this.stdout,
-                   stderr: this.stderr 
+                    statusCode: this.statusCode,
+                    exitCode: this.exitCode,
+                    stdout: this.stdout,
+                    stderr: this.stderr 
                 }
                 console.log('Job '+this.id+' finished.  No callback provided');
                 console.log('Result:\n', result);
@@ -109,6 +109,7 @@ var ConfigureDocker = function(config){
                     delete job.solutionTime;
                     delete job.duration;
                     delete job.responseTime;
+                    delete job.exitCode;
                     job.statusCode = 200;
                     job.state = NEW;
                     job.retryCount = 0;
@@ -153,6 +154,7 @@ var ConfigureDocker = function(config){
                 this.retryCount = 0;
                 this.logBytes = 0;
                 this.statusCode = 200;
+                this.exitCode = undefined;
                 this.duration = null;
                 this.initialTime = undefined;
                 this.curTime = undefined;
@@ -209,8 +211,8 @@ var ConfigureDocker = function(config){
                 },
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
-                max: 60,
-                min: 40, 
+                max: 3,
+                min: 2, 
                 log: false // can also be a function
             });
         }
@@ -265,7 +267,17 @@ var ConfigureDocker = function(config){
             job.report('payload is: '+payload);
             if(payload == null) return; // TODO fail state
             if(type == 2) job.stderr += payload;
-            else if(type == 1) job.stdout += payload;
+            else if(type == 1) {
+                try {
+                    var json = JSON.parse(payload);
+                    if(!!json.stdout) job.stdout = json.stdout;
+                    if(!!json.stderr) job.stderr = json.stderr;
+                    if(typeof json.exitCode !== 'undefined') job.exitCode = json.exitCode;
+                } catch(jx) {
+                    job.report("problem parsing json output from container: "+jx);
+                    job.stdout += payload;
+                }
+            }
             else job.report('Problem with streaming API - check version in config!\nDiscarding...');
         }
     }
