@@ -92,16 +92,6 @@ var express = require('express'),
                 runner.pool = false;
             });
         });
-        /*
-        for(var lang in runners) {
-            if(!runners[lang].pool) continue;
-
-            runners[lang].pool.drain(function(){
-                console.log('Shutting down pool: '+lang);
-                runners[lang].pool.destroyAllNow();
-                runners[lang].pool = false;
-            });
-        }*/
     });
 
     app.get('/:runner/shutdown', function(req, res) {
