@@ -19,10 +19,11 @@ var states = [];
 var NEW = 0,
     RETRY = 1,
     WAITING = 2,
-    FINISHED = 3,
-    RECOVERY = 4,
-    FAIL = 5;
-var stateNames = ['NEW', 'RETRY', 'WAITING', 'FINISHED', 'RECOVERY', 'FAIL'];
+    ACCUMULATE = 3,
+    FINISHED = 4,
+    RECOVERY = 5,
+    FAIL = 6;
+var stateNames = ['NEW', 'RETRY', 'WAITING', 'ACCUMULATE', 'FINISHED', 'RECOVERY', 'FAIL'];
 
 
 var ConfigureDocker = function(config){
@@ -31,6 +32,17 @@ var ConfigureDocker = function(config){
     config.version = config.version || 'v1.10';
 
     var docker = DockerIO(config.dockerOpts);
+
+    function defaultCB(err, job) {
+        var result = {
+            statusCode: job.statusCode,
+            exitCode: job.exitCode,
+            stdout: job.stdout,
+            stderr: job.stderr 
+        }
+        console.log('Job '+job.id+' finished.  No callback provided');
+        console.log('Result:\n', result);
+    }
 
 
     function _makeRunner(runnerConfig) {
@@ -71,6 +83,8 @@ var ConfigureDocker = function(config){
             this.pool.acquire(function(err, job){
                 if(err) throw err; 
                 job.initialTime = Date.now();
+                // FIXME remove double strategy, stick with one
+                job.finalCB = finalCB;
                 job.injectCodeOrMonitor(codeStream, finalCB);
             });
         };
@@ -78,16 +92,6 @@ var ConfigureDocker = function(config){
         // do not call this directly anymore if using pool
         cw.prototype.createJob = function() {
 
-            var defaultCB = function() {
-                var result = {
-                    statusCode: this.statusCode,
-                    exitCode: this.exitCode,
-                    stdout: this.stdout,
-                    stderr: this.stderr 
-                }
-                console.log('Job '+this.id+' finished.  No callback provided');
-                console.log('Result:\n', result);
-            }
 
             var _cleanup = function(healthCheck) {
                 var job = this;
@@ -105,14 +109,19 @@ var ConfigureDocker = function(config){
                         job.client.destroy();
                         delete job.client;
                     }
+
                     delete job.injectTime;
                     delete job.solutionTime;
+                    delete job.finalCB;
                     delete job.duration;
                     delete job.responseTime;
                     delete job.exitCode;
+
                     job.statusCode = 200;
                     job.state = NEW;
                     job.retryCount = 0;
+                    job.finalCB = job.defaultCB;
+
                     job.pool.release(this); 
                 } else {
                     job.report('removing container at use='+job.useLevel);
@@ -146,6 +155,14 @@ var ConfigureDocker = function(config){
             }
             
             var job = function(){
+
+                // ==========
+                // SOCKET FIX
+                this.oClient = undefined;
+                // change to iClient?
+                this.Client = undefined;
+                // ==========
+
                 this.id = undefined;
                 this.stdout = '';
                 this.stderr = '';
@@ -160,7 +177,7 @@ var ConfigureDocker = function(config){
                 this.curTime = undefined;
                 this.isRecovery = _isRecovery;
                 this.injectCodeOrMonitor = _injectCodeOrMonitor;
-                this.defaultCB = defaultCB;
+                this.finalCB = defaultCB;
                 this.instrument = _instrument;
                 this.report = _report;
                 this.cleanup = _cleanup;
@@ -168,6 +185,62 @@ var ConfigureDocker = function(config){
             job.prototype = this;
             
             return new job();
+        }
+
+        function attachStdListener(job) {
+            var self = job;
+
+            var oClient = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
+                self.oClient = oClient;
+
+                oClient.on('error', function(err) {
+                   self.report('oClient socket error: '+err);
+                });
+
+                oClient.on('readable', function() {
+                    self.report('oClient received readable');
+                });
+
+                oClient.on('data', function(data) {
+                    if(self.state === NEW) return;
+
+                    //self.report('oClient data received ' + data);
+                    data.toString(); // read from buffer
+                    self.report('oClient data received ');
+
+                    var success = false;
+                    if(self.state === ACCUMULATE) {
+                        if(!job.partial) job.finalCB(new Error('Chunked stream from container failed.'), job);
+                        var merged = Buffer.concat([job.partial, data]);
+                        success = extractPayload(self, merged);
+                        //success = extractPayload(self, data);
+                    } else success = extractPayload(self, data);
+
+                    if(success) {
+                        self.duration = (Date.now() - self.injectTime);
+                        self.state = FINISHED;
+                        self.finalCB(null, self);
+                    }
+                });
+
+                oClient.on('finish', function() {
+                    self.instrument('oClient socket finished');
+                });
+
+                oClient.on('end', function() {
+                    self.instrument('oClient socket ended');
+                });
+
+                var sin, sout, serr;
+                sin='0';
+                sout = serr = '1';
+
+                // TODO remove content-type
+                oClient.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
+                    'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
+            });
+
+            return oClient;
         }
 
         var thisRunner = new cw();
@@ -182,6 +255,7 @@ var ConfigureDocker = function(config){
                                 job.id = res.Id;
                                 thisRunner.docker.containers.start(job.id, function(err, result) {
                                    if(err) throw err;
+                                   attachStdListener(job);
                                    callback(job);
                                 });
                             } else callback(new Error('No ID returned from docker create'), null);
@@ -211,7 +285,7 @@ var ConfigureDocker = function(config){
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
                 max: 3,
-                min: 2, 
+                min: 1, 
                 log: false // can also be a function
             });
 
@@ -246,50 +320,53 @@ var ConfigureDocker = function(config){
         });
     }
 
-    function extractPayload(job, data) {
-        job.instrument('extracting payload');
-        var payload = '';
-        if(job.runOpts.Tty) {
-            payload = data.slice(); 
-            job.report('payload type: ' + (typeof payload));
-            job.stdout += payload;
-        } else {
-            var type = data.readUInt8(0);
-            job.report('type is : '+type);
-            var size = data.readUInt32BE(4);
-            job.report('data size is : '+data.length);
+    function parseJSON(job, payload) {
+        try {
+            //job.report('Attempting to parse json:\n'+payload);
+            var json = JSON.parse(payload);
+            if(!!json.stdout) job.stdout = json.stdout;
+            if(!!json.stderr) job.stderr = json.stderr;
+            if(typeof json.exitCode !== 'undefined') job.exitCode = json.exitCode;
+            return true;
+        } catch(jx) {
+            job.report(jx);
+            //job.finalCB(jx, job);
+            return false;
+        }
+    }
 
-            // if data too small, it may be a normal retrieval
-            // testing as we may have come from recoverLogs
-            if(data.length > size+8) {
-                job.state = FAIL;
-                job.useLevel = MAX_USE;
-                job.report('Data was unexpectedly large, discarding');
-                var toError = new Error("Code timed out");
-                toError.timeout = true;
-                return;
-            }
-            job.logBytes += data.length; // recovery pointer
-            job.report('size is : '+size);
-            if((size + 8 < data.length))
-                job.report('DATA TOO LONG?');
+    function extractPayload(job, data) {
+
+        var type = data.readUInt8(0);
+        job.report('type is : '+type);
+        var size = data.readUInt32BE(4);
+        job.report('data size is : '+data.length);
+        job.report('size is : '+size);
+
+        var expected = size + 8;
+        if(expected <= data.length) {
             payload = data.slice(8, size+8);
-            job.report('payload is: '+payload);
-            if(payload == null) return; // TODO fail state
+            //job.report('payload is: '+payload);
+
+            var success = false;
             if(type == 2) job.stderr += payload;
             else if(type == 1) {
-                try {
-                    var json = JSON.parse(payload);
-                    if(!!json.stdout) job.stdout = json.stdout;
-                    if(!!json.stderr) job.stderr = json.stderr;
-                    if(typeof json.exitCode !== 'undefined') job.exitCode = json.exitCode;
-                } catch(jx) {
-                    job.report("problem parsing json output from container: "+jx);
-                    job.stdout += payload;
-                }
+                success = parseJSON(job, payload);
             }
-            else job.report('Problem with streaming API - check version in config!\nDiscarding...');
-        }
+            else job.finalCB(new Error('Invalid stream from container'), job);
+
+            //return true;
+            
+            // We now have to handle concatting two chunked streams via while loop
+            if(!success) job.partial = data;
+            return success;
+        } else if(expected > data.length) {
+            job.state = ACCUMULATE;
+            job.partial = data;
+            job.report('data is chunked, waiting for payload to complete');
+        } else job.finalCB(new Error('Invalid payload length from container'), job);
+
+        return false;
     }
 
     // Logs would require a smart extraction + placeholder if ongoing
@@ -301,42 +378,14 @@ var ConfigureDocker = function(config){
         else extractPayload(job, data.slice(job.logBytes));
     }
 
-    function retryRecoverFail(job, codeStream, cb) {
-        job.client.destroy();
-        delete job.client;
-        if(!job.isRecovery()) {
-            job.state = RETRY;
-            // Delay will inrease with each retry if exponent.
-            var timeRemaining = TIMEOUT-(Date.now()-job.injectTime);
-            timeRemaining = Math.max(timeRemaining, 0);
-            var delay = Math.pow(job.retryCount++, RETRY_GROWTH_FACTOR);
-            if(timeRemaining < delay) {
-                job.state = RECOVERY;
-                delay = timeRemaining;
-                job.retryCount = MAX_RETRY+100; // to obviate in logs
-            }
-            job.report('waiting '+delay+'ms to retry');
-            setTimeout(function() {
-                job.injectCodeOrMonitor(codeStream, cb);
-            }, delay);
-        } else {
-            // In this case we failed to recover, just report timeout
-            job.report('In forbidden block...');
-            var toError = new Error("Code timed out");
-            toError.timeout = true;
-            cb(toError, job);
-        } 
-    }
-
-    function _injectCodeOrMonitor(codeStream, CB) {
+    function _injectCodeOrMonitor(codeStream) {
         var self = this;
-        CB = CB || self.defaultCB;
 
         var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
             self.client = client;
 
             client.on('error', function(err) {
-               CB(err, self);
+               self.finalCB(err, self);
             });
 
             client.on('data', function(data) {
@@ -347,67 +396,28 @@ var ConfigureDocker = function(config){
                         self.injectTime = Date.now();
                         codeStream.pipe(client);
                         break;
-                    case RECOVERY:
-                    case RETRY:
-                        self.instrument('retry attempted '+data);
-                        self.state = WAITING;
-                        self.client.setTimeout(200, function(){
-                            self.instrument('socket idle timeout');
-                            retryRecoverFail(self, codeStream, CB);
-                        });
-                        break;
-                    case WAITING:
-                        if(self.isRecovery()) {
-                            recoverLogs(self, data);
-                            self.duration = null;
-                            if(self.state !== FAIL)
-                                self.state = FINISHED;
-                        } else {
-                            extractPayload(self, data);
-                            self.duration = (Date.now() - self.injectTime);
-                            self.state = FINISHED;
-                        }
-                        self.client.end();
-                        break;
                 }
             });
 
             // code has been injected
+            // TODO remove state completely
             client.on('finish', function() {
-
                 self.instrument('client socket finished');
-                switch(self.state) {
-                    case NEW:
-                        self.state = WAITING;
-                        client.resume();
-                        break;
-                    case FAIL:
-                    case FINISHED:
-                        self.client.destroy();
-                        delete self.client;
-                        CB(null, self);
-                        break;
-                }
+                self.state = WAITING;
+                self.client.destroy();
+                delete self.client;
+                delete client;
             });
 
             client.on('end', function() {
                 self.instrument('client socket ended');
-                switch(self.state) {
-                    case WAITING:
-                        if(!self.isRecovery()) {
-                            retryRecoverFail(self, codeStream, CB);
-                        } else CB(new Error('Unusual state'), self);
-                        break;
-                }
             });
 
             var sin, sout, serr;
-            sin = self.state === NEW ? '1' : '0';
-            sout = serr = '1';
-//            var slogs = ''; // no more log traversal attempts
-            var slogs = self.isRecovery() ? 'logs=1&' : '';
+            sin='1';
+            sout = serr = '0';
 
-            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?'+slogs+'stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
+            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
         });
 
