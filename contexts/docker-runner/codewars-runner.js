@@ -1,20 +1,13 @@
 var DockerIO = require('docker.io'),
     poolModule = require('generic-pool'),
     util = require('util'),
-    streams = require('stream'),
-    streamBuffers = require('stream-buffers'),
     fs = require('fs'),
     net = require('net');
 
-var TIMEOUT = 3200; // some wiggle room for load
-var MAX_RETRY = 50;
-//var RETRY_GROWTH_FACTOR = 2;
-var RETRY_GROWTH_FACTOR = 0; // sets delay to 1 ms
-// if at any point we receive confusing errors,
-// setting useLevel = MAX_USE will mark the container
-// for destruction.
+// useLevel not currently used
 var MAX_USE = 1000;
 
+var STDOUT=1, STDERR=2;
 var states = [];
 var NEW = 0,
     RETRY = 1,
@@ -25,11 +18,7 @@ var NEW = 0,
     FAIL = 6;
 var stateNames = ['NEW', 'RETRY', 'WAITING', 'ACCUMULATE', 'FINISHED', 'RECOVERY', 'FAIL'];
 
-
 var ConfigureDocker = function(config){
-
-    // FIXME
-    config.version = config.version || 'v1.10';
 
     var docker = DockerIO(config.dockerOpts);
 
@@ -83,7 +72,6 @@ var ConfigureDocker = function(config){
             this.pool.acquire(function(err, job){
                 if(err) throw err; 
                 job.initialTime = Date.now();
-                // FIXME remove double strategy, stick with one
                 job.finalCB = finalCB;
                 job.injectCodeOrMonitor(codeStream, finalCB);
             });
@@ -116,6 +104,7 @@ var ConfigureDocker = function(config){
                     delete job.duration;
                     delete job.responseTime;
                     delete job.exitCode;
+                    delete job.partial;
 
                     job.statusCode = 200;
                     job.state = NEW;
@@ -140,11 +129,6 @@ var ConfigureDocker = function(config){
                 } 
 
                 this.report(reportString);
-            }
-
-            // any changing criteria for last ditch log recovery attempt
-            var _isRecovery = function() {
-                return this.retryCount >= MAX_RETRY;
             }
 
             var _report = function(optMessage) {
@@ -175,7 +159,6 @@ var ConfigureDocker = function(config){
                 this.duration = null;
                 this.initialTime = undefined;
                 this.curTime = undefined;
-                this.isRecovery = _isRecovery;
                 this.injectCodeOrMonitor = _injectCodeOrMonitor;
                 this.finalCB = defaultCB;
                 this.instrument = _instrument;
@@ -188,59 +171,57 @@ var ConfigureDocker = function(config){
         }
 
         function attachStdListener(job) {
-            var self = job;
 
-            var oClient = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
-                self.oClient = oClient;
+            var onData = function (data) {
+                if(job.state === NEW) return;
 
-                oClient.on('error', function(err) {
-                   self.report('oClient socket error: '+err);
-                });
+                //job.report('oClient data received ' + data);
+                data.toString(); // read from buffer
+                job.report(util.format('%s data received - length: %d', 
+                        this.name, data.length));
 
-                oClient.on('readable', function() {
-                    self.report('oClient received readable');
-                });
+                if(!job.partial || !job.partial.cur) {
+                    job.report('checking header');
+                    data = consumeHeader(job, data);
+                } else job.report('ignoring header');
 
-                oClient.on('data', function(data) {
-                    if(self.state === NEW) return;
+                job.state = ACCUMULATE;
+                try {
+                    var goodJSON = false;
+                    var looksComplete = extractPayload(job, data);
+                    if(looksComplete) {
+                        if(!!job.partial.out) {
+                            try {
+                                goodJSON = parseJSON(job, job.partial.out)
+                            } catch(ex) {
+                                // more data is probably on the wire
+                                job.report('parse failed: '+ex);
+                                delete job.partial.cur;
+                            }
 
-                    //self.report('oClient data received ' + data);
-                    data.toString(); // read from buffer
-                    self.report('oClient data received ');
+                            if(goodJSON) {
+                                job.duration = (Date.now() - job.injectTime);
+                                job.state = FINISHED;
+                                job.finalCB(null, job);
+                            }
 
-                    var success = false;
-                    if(self.state === ACCUMULATE) {
-                        if(!job.partial) job.finalCB(new Error('Chunked stream from container failed.'), job);
-                        var merged = Buffer.concat([job.partial, data]);
-                        success = extractPayload(self, merged);
-                        //success = extractPayload(self, data);
-                    } else success = extractPayload(self, data);
-
-                    if(success) {
-                        self.duration = (Date.now() - self.injectTime);
-                        self.state = FINISHED;
-                        self.finalCB(null, self);
+                        } else if(!!job.partial.stderr) {
+                            job.statusCode = 500;
+                            job.exitCode = -1;
+                            job.state = FAIL;
+                            job.stderr = job.partial.stderr;
+                        }
                     }
-                });
+                } catch(extractException){
+                    job.statusCode = 500;
+                    job.exitCode = -1;
+                    job.state = FAIL;
+                    job.report('Sending 500 to client: '+extractException);
+                    job.finalCB(extractException, job);
+                }
+            };
 
-                oClient.on('finish', function() {
-                    self.instrument('oClient socket finished');
-                });
-
-                oClient.on('end', function() {
-                    self.instrument('oClient socket ended');
-                });
-
-                var sin, sout, serr;
-                sin='0';
-                sout = serr = '1';
-
-                // TODO remove content-type
-                oClient.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
-                    'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
-            });
-
-            return oClient;
+            var oClient = getClientForContainer(job, true, { data: onData });
         }
 
         var thisRunner = new cw();
@@ -291,7 +272,6 @@ var ConfigureDocker = function(config){
 
             // TODO remove all containers from separate list?
             function gracefulExit() {
-                console.log('WHAT THE HECK');
                 thisRunner.pool.drain(function() {
                     thisRunner.pool.destroyAllNow();
                 });
@@ -321,52 +301,75 @@ var ConfigureDocker = function(config){
     }
 
     function parseJSON(job, payload) {
-        try {
-            //job.report('Attempting to parse json:\n'+payload);
-            var json = JSON.parse(payload);
-            if(!!json.stdout) job.stdout = json.stdout;
-            if(!!json.stderr) job.stderr = json.stderr;
-            if(typeof json.exitCode !== 'undefined') job.exitCode = json.exitCode;
-            return true;
-        } catch(jx) {
-            job.report(jx);
-            //job.finalCB(jx, job);
-            return false;
-        }
+        //job.report('Attempting to parse json:\n'+payload);
+        var json = JSON.parse(payload);
+        if(!!json.stdout) job.stdout = json.stdout;
+        if(!!json.stderr) job.stderr = json.stderr;
+        if(typeof json.exitCode !== 'undefined') job.exitCode = json.exitCode;
+        return true;
     }
 
-    function extractPayload(job, data) {
+    // Has side effects!!
+    function consumeHeader(job, data) {
+        if(!job.partial) job.partial = {out: '', err: ''};
+        var cur = {
+            type: data.readUInt8(0),
+            expected: data.readUInt32BE(4),
+            size: 0
+        }
+        job.report('current type is : '+ cur.type);
+        job.report('expected size is : '+ cur.expected);
 
-        var type = data.readUInt8(0);
-        job.report('type is : '+type);
-        var size = data.readUInt32BE(4);
-        job.report('data size is : '+data.length);
-        job.report('size is : '+size);
+        var prev = job.partial.cur;
 
-        var expected = size + 8;
-        if(expected <= data.length) {
-            payload = data.slice(8, size+8);
-            //job.report('payload is: '+payload);
+        if(!!prev) {
+            if(prev.type !== cur.type)
+                job.report(util.format('Stream switching from %d to %d', prev.type, cur.type));
 
-            var success = false;
-            if(type == 2) job.stderr += payload;
-            else if(type == 1) {
-                success = parseJSON(job, payload);
+            //if(prev.size === 0 || cur.type > 2) {
+            // This was a problem during double recur
+            if(cur.type > 2) {
+                job.report('Header seems to have been consumed... ignoring "header"');
+                return;
             }
-            else job.finalCB(new Error('Invalid stream from container'), job);
+        }
+        job.partial.cur = cur;
+        return data.slice(8, data.length); // remove header
+    }
 
-            //return true;
-            
-            // We now have to handle concatting two chunked streams via while loop
-            if(!success) job.partial = data;
-            return success;
-        } else if(expected > data.length) {
-            job.state = ACCUMULATE;
-            job.partial = data;
-            job.report('data is chunked, waiting for payload to complete');
-        } else job.finalCB(new Error('Invalid payload length from container'), job);
 
-        return false;
+    function extractPayload(job, data) {
+        var looksComplete = false;
+        var cutoff; // multiplex may cutoff inside a TCP chunk
+
+        if(!job.partial || !job.partial.cur)
+            throw new Error('Partial not set');
+        var cur = job.partial.cur;
+        
+        // if not recur cur.size should be 0
+        var L = data.length + cur.size;
+        if(cur.expected == L) looksComplete = true;
+
+        var payload = cur.expected >= L ? data.toString('utf8') :
+            data.slice(0, cutoff=(cur.expected - cur.size)).toString();
+
+        //job.report('payload set to: '+payload);
+
+        if(cur.type === STDOUT) job.partial.out += payload;
+        else if(cur.type === STDERR) job.partial.err += payload;
+        else throw new Error('Bad stream type');
+
+        if(cur.expected > L) cur.size += data.length;
+
+        if(cur.expected < L) {
+            data = data.slice(cutoff, data.length);
+            job.report('recurring due to early payload cutoff');
+            job.report('new length is '+data.length);
+            data = consumeHeader(job, data);
+            looksComplete = extractPayload(job, data); // recur
+        }
+
+        return looksComplete;
     }
 
     // Logs would require a smart extraction + placeholder if ongoing
@@ -376,6 +379,51 @@ var ConfigureDocker = function(config){
 
         if(data.length < job.logBytes+8) extractPayload(job, data);
         else extractPayload(job, data.slice(job.logBytes));
+    }
+
+
+    function getClientForContainer(job, isOutput, handlers) {
+        var name = isOutput ? 'oClient' : 'client'; // for logs
+
+        if(!handlers['data']) throw new Error('data handler not provided');
+
+        var onData = handlers['data'];
+        var onError = handlers['error'] || function(err) {
+            job.report(util.format('%s socket error: %s', name, err));
+        };
+        var onRead = handlers['readable'] || function() { 
+            job.report(util.format('%s socket received readable', name));
+        };
+        var onFinish = handlers['finish'] || function() {
+            job.report(util.format('%s socket finished', name));
+        };
+        var onEnd = handlers['end'] || function() {
+            job.instrument(util.format('%s socket ended', name));
+        }
+
+        var newClient = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
+            // only until we verify clojure under load
+            // earlier release had problems with gc
+            if(isOutput) job.oClient = newClient;
+            else job.client = newClient;
+
+            newClient.name = name;
+
+            newClient.on('error', onError);
+            newClient.on('readable', onRead);
+            newClient.on('data', onData);
+            newClient.on('finish', onFinish);
+            newClient.on('end', onEnd);
+
+            var sin, sout, serr;
+            sin = isOutput ? '0' : '1';
+            sout = serr = isOutput ? '1' : '0';
+
+            newClient.write('POST /'+config.dockerOpts.version+'/containers/' + job.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
+                'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
+        });
+
+        return newClient;
     }
 
     function _injectCodeOrMonitor(codeStream) {
@@ -396,11 +444,13 @@ var ConfigureDocker = function(config){
                         self.injectTime = Date.now();
                         codeStream.pipe(client);
                         break;
+                    default:
+                        self.
+                        break;
                 }
             });
 
             // code has been injected
-            // TODO remove state completely
             client.on('finish', function() {
                 self.instrument('client socket finished');
                 self.state = WAITING;
@@ -417,7 +467,7 @@ var ConfigureDocker = function(config){
             sin='1';
             sout = serr = '0';
 
-            client.write('POST /'+config.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
+            client.write('POST /'+config.dockerOpts.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
                 'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
         });
 
