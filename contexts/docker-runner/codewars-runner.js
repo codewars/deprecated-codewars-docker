@@ -429,49 +429,40 @@ var ConfigureDocker = function(config){
     function _injectCodeOrMonitor(codeStream) {
         var self = this;
 
-        var client = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
-            self.client = client;
+        var onError = function(err) {
+            self.finalCB(err, self);
+        };
 
-            client.on('error', function(err) {
-               self.finalCB(err, self);
-            });
-
-            client.on('data', function(data) {
+        var onData = function(data) {
                 self.report('data received ' + data);
                 switch(self.state) {
                     case NEW: 
                         self.instrument('injecting code');
                         self.injectTime = Date.now();
-                        codeStream.pipe(client);
+                        codeStream.pipe(self.client);
                         break;
                     default:
                         self.
                         break;
                 }
-            });
+        };
 
-            // code has been injected
-            client.on('finish', function() {
-                self.instrument('client socket finished');
-                self.state = WAITING;
-                self.client.destroy();
-                delete self.client;
-                delete client;
-            });
+        // code has been injected
+        var onFinish = function() {
+            self.instrument('client socket finished');
+            self.state = WAITING;
+            self.client.destroy();
+            delete self.client;
+            delete client;
+        };
 
-            client.on('end', function() {
-                self.instrument('client socket ended');
-            });
+        var injectHandlers = {
+            error: onError,
+            data: onData,
+            finish: onFinish
+        };
 
-            var sin, sout, serr;
-            sin='1';
-            sout = serr = '0';
-
-            client.write('POST /'+config.dockerOpts.version+'/containers/' + self.id + '/attach?stdin='+sin+'&stdout='+sout+'&stderr='+serr+'&stream=1 HTTP/1.1\r\n' +
-                'Content-Type: application/vnd.docker.raw-stream\r\n\r\n');
-        });
-
-        return client;
+        var injectClient = getClientForContainer(self, false, injectHandlers);
     }
 
     return { createRunner: _makeRunner }
