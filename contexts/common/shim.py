@@ -11,7 +11,7 @@ else:
 
 script = ''
 
-bound = ['timeout', '3']
+bound = ['timeout', '--foreground', '3']
 
 ARG = 1
 STDIN = 2
@@ -32,21 +32,18 @@ while True:
         conf = commands[language]
         if conf['method'] is STDIN:
             job = Popen(bound+conf['command'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-            job.stdin.write(script)
-            job.stdin.close()
-            rett = job.wait()
-            out = job.stdout.read()
-            err = job.stderr.read()
+            out, err = job.communicate(script)
+            rett = job.returncode
         elif conf['method'] is ARG:
             job = Popen(bound+conf['command']+[script], stdout=PIPE, stderr=PIPE)
-            rett = job.wait()
-            out = job.stdout.read()
-            err = job.stderr.read()
+            out, err = job.communicate(script)
+            rett = job.returncode
 
         print json.dumps({'stdout': out, 'stderr': err, "exitCode": rett})
         sys.stdout.flush()
         out = None
         err = None
         script = ''
+        break
     else:
         script = script + '\n' + iLine
