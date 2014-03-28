@@ -11,7 +11,7 @@ else:
 
 script = ''
 
-bound = ['timeout', '--foreground', '3']
+bound = ['timeout', '3']
 
 ARG = 1
 STDIN = 2
@@ -44,6 +44,5 @@ while True:
         out = None
         err = None
         script = ''
-        break
     else:
         script = script + '\n' + iLine
