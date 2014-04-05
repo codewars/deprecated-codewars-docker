@@ -124,13 +124,17 @@ var express = require('express'),
             return;
         }
 
-        runners[req.params.runner].run(cStream, function(err, job) {
+        var kataId = req.query.kataId;
+
+        var cb = function(err, job) {
             if(!!err) res.send(errResponse(err));
             else if(!job) res.send(errResponse());
             else res.send(result(job, startTime));
             
             if(!!job) job.cleanup(!!err);
-        });
+        };
+
+        runners[req.params.runner].run(cStream, cb, kataId);
     });
     app.listen(this.port);
 })(config);

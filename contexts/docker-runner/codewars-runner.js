@@ -6,6 +6,8 @@ var DockerIO = require('docker.io'),
 
 // useLevel not currently used
 var MAX_USE = 1000;
+var IDLE_MINS = 15;
+var IDLE_TIMEOUT_MS = IDLE_MINS * 60 * 1000;
 
 var STDOUT=1, STDERR=2;
 var states = [];
@@ -18,7 +20,7 @@ var NEW = 0,
     FAIL = 6;
 var stateNames = ['NEW', 'RETRY', 'WAITING', 'ACCUMULATE', 'FINISHED', 'RECOVERY', 'FAIL'];
 
-var ConfigureDocker = function(config){
+var ConfigureDocker = function(config) {
 
     var docker = DockerIO(config.dockerOpts);
 
@@ -68,11 +70,12 @@ var ConfigureDocker = function(config){
             });
         };
 
-        cw.prototype.run = function(codeStream, finalCB) {
+        cw.prototype.run = function(codeStream, finalCB, clientToken) {
             this.pool.acquire(function(err, job){
                 if(err) throw err; 
                 job.initialTime = Date.now();
                 job.finalCB = finalCB;
+                if(!!clientToken) job.report('Job passed with client token: ' + clientToken);
                 job.injectCodeOrMonitor(codeStream, finalCB);
             });
         };
@@ -222,6 +225,17 @@ var ConfigureDocker = function(config){
             };
 
             var oClient = getClientForContainer(job, true, { data: onData });
+
+            oClient.setTimeout(IDLE_TIMEOUT_MS, function() {
+                job.report('Socket idle for '+IDLE_MINS+' mins, replacing container');
+                try {
+                    defaultCB.call(job, null, job); // glean any additional info in logs
+                    job.finalCB(new Error('Idle container '+job.id), job);
+                } catch(ex) {
+                    job.report(util.format('Callback failed for job %s with exception: %s', job.id, ex.message));
+                }
+                job.pool.destroy(job);
+            });
         }
 
         var thisRunner = new cw();
@@ -246,6 +260,10 @@ var ConfigureDocker = function(config){
                 },
                 destroy: function(job) {
                     job.report('self destruct');
+
+                    if(!!job.client) job.client.destroy();
+                    if(!!job.oClient) job.oClient.destroy();
+
                     // TODO make synchronous, but handle requests-in-progress
                     // try setTimeout so pool can get back to business
                     setTimeout(function() {
@@ -288,6 +306,7 @@ var ConfigureDocker = function(config){
         job.instrument('Job failed, inspecting container');
 
         job.docker.containers.inspect(job.id, function(err, details) {
+
             if(err) job.report('Health check error', err);
 
             if(err || !details.State.Running) {
@@ -326,7 +345,6 @@ var ConfigureDocker = function(config){
             if(prev.type !== cur.type)
                 job.report(util.format('Stream switching from %d to %d', prev.type, cur.type));
 
-            //if(prev.size === 0 || cur.type > 2) {
             // This was a problem during double recur
             if(cur.type > 2) {
                 job.report('Header seems to have been consumed... ignoring "header"');
@@ -399,7 +417,7 @@ var ConfigureDocker = function(config){
         };
         var onEnd = handlers['end'] || function() {
             job.instrument(util.format('%s socket ended', name));
-        }
+        };
 
         var newClient = net.connect(config.dockerOpts.port, config.dockerOpts.hostname, function() {
             // only until we verify clojure under load
