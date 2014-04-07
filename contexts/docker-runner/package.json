@@ -12,6 +12,7 @@
     "docker.io": "0.9.8",
     "generic-pool": "2.0.4",
     "stream-buffers": "0.2.5",
+    "moment": "~2.5.1"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",

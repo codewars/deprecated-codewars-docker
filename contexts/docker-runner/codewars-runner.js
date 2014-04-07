@@ -1,9 +1,11 @@
 var DockerIO = require('docker.io'),
     poolModule = require('generic-pool'),
     util = require('util'),
+    moment = require('moment'),
     fs = require('fs'),
     net = require('net');
 
+var logDateFormat = 'YYYY-MM-DD HH:mm Z';
 // useLevel not currently used
 var MAX_USE = 1000;
 var IDLE_MINS = 15;
@@ -31,8 +33,8 @@ var ConfigureDocker = function(config) {
             stdout: job.stdout,
             stderr: job.stderr 
         }
-        console.log('Job '+job.id+' finished.  No callback provided');
-        console.log('Result:\n', result);
+        job.report('Job '+job.id+' finished.  No callback provided');
+        job.report('Result:\n', result);
     }
 
 
@@ -139,7 +141,7 @@ var ConfigureDocker = function(config) {
                 var state = this.state >= WAITING && this.retryCount > 0 ? 
                     util.format('%s (RETRY #%d)', stateNames[this.state], this.retryCount) : stateNames[this.state];
                 var id = !!this.id ? this.id.substring(0,13) : 'NONE';
-                console.log('job %s: %s %s', id, state, optMessage);
+                console.log('%s job %s: %s %s', moment().format(logDateFormat), id, state, optMessage);
             }
             
             var job = function(){
