@@ -40,13 +40,14 @@ var ConfigureDocker = function(config) {
 
         var options = {
             Image: (config.repo+':'+runnerConfig.image),
+            Memory: runnerConfig.memory,
             AttachStdin: true,
             AttachStdout: true,
             AttachStderr: true,
             OpenStdin: true,
+            StdinOnce: false,
             Tty: false,
             Env: ["RUNNER="+runnerConfig.language],
-            StdinOnce: false,
             Cmd: runnerConfig.cmd
         };
 

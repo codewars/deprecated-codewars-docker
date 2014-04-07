@@ -4,6 +4,8 @@ var config = {
     repo: 'codewars'
 };
 
+var MEM_BASE = 128000;
+
 config.dockerOpts = {
     socketPath: false,
     hostname: '172.17.42.1',
@@ -18,6 +20,7 @@ config.runners = [
         image: 'noderunner',
         cmd: ['/usr/local/bin/run'],
         extension: 'js',
+        memory: MEM_BASE,
         pool: true
     },
     {
@@ -25,6 +28,7 @@ config.runners = [
         image: 'noderunner',
         cmd: ['/usr/local/bin/run'],
         extension: 'coffee',
+        memory: MEM_BASE,
         pool: false
     },
     {
@@ -32,6 +36,7 @@ config.runners = [
         image: 'pyrunner',
         cmd: ['/usr/local/bin/run', '/opt/ve/pyrunner/bin/python', '/opt/apps/pyrunner/run.py'],
         extension: 'py',
+        memory: MEM_BASE,
         pool: false 
     }];
 
