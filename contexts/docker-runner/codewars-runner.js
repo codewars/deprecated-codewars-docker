@@ -270,13 +270,13 @@ var ConfigureDocker = function(config) {
                     // try setTimeout so pool can get back to business
                     setTimeout(function() {
                         job.docker.containers.kill(job.id, function(err) {
-                            if(err) {
-                                job.report('Container could not be killed'+err);
+                            if(!!err) {
+                                job.report('Container could not be killed\n'+err);
                                 // Remote API v0.10 allows forced removal
                                 delete job;
                             } else {
                                 job.docker.containers.remove(job.id, function(err) {
-                                    if(err) job.report('Container could not be removed'+err);
+                                    if(err) job.report('Container could not be removed\n'+err);
                                     delete job;
                                 });
                             }
