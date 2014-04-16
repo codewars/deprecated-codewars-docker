@@ -4,7 +4,8 @@ var config = {
     repo: 'codewars'
 };
 
-var MEM_BASE = 128000;
+var MEM_BASE = 524288;
+var memoryLimit = MEM_BASE * 1000;
 
 config.dockerOpts = {
     socketPath: false,

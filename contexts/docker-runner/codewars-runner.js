@@ -6,7 +6,6 @@ var DockerIO = require('docker.io'),
     net = require('net');
 
 var logDateFormat = 'YYYY-MM-DD HH:mm Z';
-// useLevel not currently used
 var MAX_USE = 1000;
 var IDLE_MINS = 15;
 var IDLE_TIMEOUT_MS = IDLE_MINS * 60 * 1000;
@@ -27,6 +26,7 @@ var ConfigureDocker = function(config) {
     var docker = DockerIO(config.dockerOpts);
 
     function defaultCB(err, job) {
+        if(err) job.useLevel = MAX_USE;
         var result = {
             statusCode: job.statusCode,
             exitCode: job.exitCode,
@@ -232,12 +232,11 @@ var ConfigureDocker = function(config) {
             oClient.setTimeout(IDLE_TIMEOUT_MS, function() {
                 job.report('Socket idle for '+IDLE_MINS+' mins, replacing container');
                 try {
-                    defaultCB.call(job, null, job); // glean any additional info in logs
+                    job.useLevel = MAX_USE; // ensure this is recycled. (may change once we identify root cause)
                     job.finalCB(new Error('Idle container '+job.id), job);
                 } catch(ex) {
                     job.report(util.format('Callback failed for job %s with exception: %s', job.id, ex.message));
                 }
-                job.pool.destroy(job);
             });
         }
 
@@ -272,12 +271,12 @@ var ConfigureDocker = function(config) {
                     setTimeout(function() {
                         job.docker.containers.kill(job.id, function(err) {
                             if(err) {
-                                job.report('Container could not be killed', err);
+                                job.report('Container could not be killed'+err);
                                 // Remote API v0.10 allows forced removal
                                 delete job;
                             } else {
                                 job.docker.containers.remove(job.id, function(err) {
-                                    if(err) job.report('Container could not be removed', err);
+                                    if(err) job.report('Container could not be removed'+err);
                                     delete job;
                                 });
                             }
@@ -286,8 +285,8 @@ var ConfigureDocker = function(config) {
                 },
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
-                max: 3,
-                min: 1, 
+                max: 5,
+                min: 2, 
                 log: false // can also be a function
             });
 
