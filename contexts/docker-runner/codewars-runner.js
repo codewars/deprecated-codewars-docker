@@ -285,8 +285,8 @@ var ConfigureDocker = function(config) {
                 },
                 //idleTimeoutMillis: 9000000,
                 refreshIdle: false,
-                max: 5,
-                min: 2, 
+                max: 25,
+                min: 20, 
                 log: false // can also be a function
             });
 

@@ -4,8 +4,7 @@ var config = {
     repo: 'codewars'
 };
 
-var MEM_BASE = 524288;
-var memoryLimit = MEM_BASE * 1000;
+var MEM_BASE = 134217728;
 
 config.dockerOpts = {
     socketPath: false,
@@ -30,7 +29,7 @@ config.runners = [
         cmd: ['/usr/local/bin/run'],
         extension: 'coffee',
         memory: MEM_BASE,
-        pool: false
+        pool: true
     },
     {
         language: 'python',
