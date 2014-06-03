@@ -6,7 +6,7 @@ VAGRANTFILE_API_VERSION = "2"
 
 # Inline shell script to provision Vagrant
 provision_script = <<-EOF
-apt-get update
+apt-get update -qq
 apt-get install docker.io -y
 EOF
 
