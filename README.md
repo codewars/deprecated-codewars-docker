@@ -1,3 +1,7 @@
+# DEPRECATED
+
+This project is no longer being used. Please see [codewars-runner](https://github.com/codewars/codewars-runner). 
+
 ========
 Codewars Docker
 ========
